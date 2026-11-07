@@ -458,16 +458,39 @@ function requireInstance(args) {
   return owned[0];
 }
 
-async function attachPage(cdp) {
-  const { targetInfos = [] } = await cdp.send('Target.getTargets', {});
-  const pages = targetInfos.filter((target) => target.type === 'page');
-  const page = pages.find((target) => target.url && !target.url.startsWith('chrome://')) ?? pages[0];
-  if (!page) throw new Error('实例里没有可用的页面目标');
-  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: page.targetId, flatten: true });
-  for (const method of ['Page.enable', 'Runtime.enable', 'Network.enable', 'DOM.enable']) {
-    await cdp.send(method, {}, sessionId).catch(() => {});
+async function attachTarget(cdp, targetId) {
+  if (!targetId || typeof targetId !== 'string') {
+    throw new Error(`attachToTarget 缺少 targetId（收到 ${JSON.stringify(targetId)}）`);
   }
-  return sessionId;
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+      for (const method of ['Page.enable', 'Runtime.enable', 'Network.enable', 'DOM.enable']) {
+        await cdp.send(method, {}, sessionId).catch(() => {});
+      }
+      return sessionId;
+    } catch (error) {
+      lastError = error;
+      process.stderr.write(`[shardx] attachToTarget attempt ${attempt + 1} target=${targetId}: ${error.message}\n`);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+  throw lastError;
+}
+
+async function attachPage(cdp, wantedTargetId = '') {
+  const { targetInfos = [] } = await cdp.send('Target.getTargets', {});
+  const pages = targetInfos
+    .filter((target) => target.type === 'page')
+    .map((target) => ({ ...target, id: target.targetId ?? target.id }));
+  if (pages.length === 0) throw new Error('实例里没有可用的页面目标');
+  process.stderr.write(`[shardx] pages=${pages.map((page) => `${page.id}:${page.url}`).join(' | ')}\n`);
+  const page = (wantedTargetId ? pages.find((target) => target.id === wantedTargetId) : null)
+    ?? pages.find((target) => target.url && !target.url.startsWith('chrome://'))
+    ?? pages[0];
+  const sessionId = await attachTarget(cdp, page.id);
+  return { sessionId, targetId: page.id };
 }
 
 function wsUrlOf(started) {
@@ -480,9 +503,12 @@ function wsUrlOf(started) {
     ?? started?.wsUrl;
 }
 
-async function startProfile(profileId) {
+async function startProfile(profileId, options = {}) {
+  const body = {};
+  if (options.headless === true) body.headless = true;
+  if (options.password) body.password = String(options.password);
   try {
-    return await api('POST', `/profiles/${encodeURIComponent(profileId)}/start`, { timeoutMs: START_TIMEOUT_MS });
+    return await api('POST', `/profiles/${encodeURIComponent(profileId)}/start`, { body, timeoutMs: START_TIMEOUT_MS });
   } catch (error) {
     const running = await api('GET', '/running').catch(() => null);
     const list = asArray(running);
@@ -492,11 +518,11 @@ async function startProfile(profileId) {
   }
 }
 
-async function startOrFindRunning(profileId) {
+async function startOrFindRunning(profileId, options = {}) {
   const running = await api('GET', '/running').catch(() => null);
   const hit = asArray(running).find((item) => item?.id === profileId || item?.profile_id === profileId);
   if (hit && wsUrlOf(hit)) return hit;
-  return startProfile(profileId);
+  return startProfile(profileId, options);
 }
 
 async function profileName(profileId) {
@@ -512,13 +538,14 @@ async function openInstance(sessionId, profileId, name, started, source) {
   const url = wsUrlOf(started);
   if (!url) throw new Error('启动响应里没有 cdp.web_socket_debugger_url');
   const cdp = await Cdp.open(url);
-  const pageSession = await attachPage(cdp);
+  const { sessionId: pageSession, targetId } = await attachPage(cdp);
   const instance = {
     sessionId,
     profileId,
     name: name || profileId,
     cdp,
     pageSession,
+    targetId,
     startedAt: Date.now(),
     source,
   };
@@ -527,7 +554,7 @@ async function openInstance(sessionId, profileId, name, started, source) {
   return instance;
 }
 
-async function bind(sessionId, profileId, name) {
+async function bind(sessionId, profileId, name, options = {}) {
   const holder = instances.get(profileId);
   if (holder) {
     if (holder.sessionId !== sessionId) {
@@ -535,11 +562,11 @@ async function bind(sessionId, profileId, name) {
     }
     return holder;
   }
-  const started = await startProfile(profileId);
+  const started = await startOrFindRunning(profileId, options);
   return openInstance(sessionId, profileId, name, started, 'mcp');
 }
 
-async function attachRunning(sessionId, profileId, name) {
+async function attachRunning(sessionId, profileId, name, options = {}) {
   const holder = instances.get(profileId);
   if (holder) {
     if (holder.sessionId !== sessionId) {
@@ -547,7 +574,7 @@ async function attachRunning(sessionId, profileId, name) {
     }
     return holder;
   }
-  const started = await startOrFindRunning(profileId);
+  const started = await startOrFindRunning(profileId, options);
   return openInstance(sessionId, profileId, name, started, 'mcp-attach');
 }
 
@@ -949,13 +976,204 @@ function formatProfiles(profiles, live, mappings) {
     const session = live.get(profile.id);
     const mapping = mappings.get(profile.id);
     const flags = [
-      profile.status ? String(profile.status) : '',
+      profile.running === true ? '运行中' : '',
       session ? `MCP 会话 ${shortId(session)}` : '',
       !session && mapping ? `映射 ${shortId(mapping.session_id)}` : '',
     ].filter(Boolean).join(' · ');
-    return `${index + 1}. ${profile.name ?? '(未命名)'}  [${profile.id}]${flags ? `  ${flags}` : ''}${profile.folder ? `  /${profile.folder}` : ''}`;
+    return `${index + 1}. ${profile.name ?? '(未命名)'}  [${profile.id}]${flags ? `  ${flags}` : ''}${profile.folder ? `  📁 ${profile.folder}` : '  📁 未分类'}`;
   });
   return `${profiles.length} 个指纹环境\n${rows.join('\n')}`;
+}
+
+function cleanFolderName(value) {
+  return String(value ?? '').trim();
+}
+
+function folderLabel(value) {
+  return cleanFolderName(value) || '未分类';
+}
+
+async function foldersOverview({ includeProfiles = false } = {}) {
+  const [profilesRaw, runningRaw, foldersRaw] = await Promise.all([
+    api('GET', '/profiles'),
+    api('GET', '/running').catch(() => []),
+    api('GET', '/folders').catch(() => []),
+  ]);
+  const profiles = asArray(profilesRaw);
+  const runningIds = new Set(
+    asArray(runningRaw).map((item) => String(item?.profile_id ?? item?.id ?? '')).filter(Boolean),
+  );
+  const state = readWorkspaceState();
+  const groups = new Map();
+  for (const profile of profiles) {
+    const key = folderLabel(profile?.folder);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(profile);
+  }
+  for (const raw of asArray(foldersRaw)) {
+    const name = typeof raw === 'string' ? raw : cleanFolderName(raw?.name ?? raw?.folder ?? raw?.id);
+    if (name && !groups.has(name)) groups.set(name, []);
+  }
+  const folders = [...groups.entries()]
+    .map(([folder, list]) => {
+      const skills = state.assignments
+        .filter((item) => item.target_type === 'folder' && cleanFolderName(item.target_id) === folder)
+        .map((item) => item.skill_id);
+      const row = {
+        folder: folder === '未分类' ? '' : folder,
+        label: folder,
+        count: list.length,
+        running: list.filter((item) => item.running === true || runningIds.has(String(item.id))).length,
+        skills,
+      };
+      if (includeProfiles) {
+        row.profiles = list.map((item) => ({
+          id: item.id,
+          name: item.name ?? '',
+          running: item.running === true || runningIds.has(String(item.id)),
+        }));
+      }
+      return row;
+    })
+    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+  return {
+    count: folders.length,
+    totalProfiles: profiles.length,
+    running: runningIds.size,
+    folders,
+  };
+}
+
+const KEY_CODES = {
+  Enter: ['Enter', 13],
+  Tab: ['Tab', 9],
+  Escape: ['Escape', 27],
+  Backspace: ['Backspace', 8],
+  Delete: ['Delete', 46],
+  ArrowUp: ['ArrowUp', 38],
+  ArrowDown: ['ArrowDown', 40],
+  ArrowLeft: ['ArrowLeft', 37],
+  ArrowRight: ['ArrowRight', 39],
+  Home: ['Home', 36],
+  End: ['End', 35],
+  PageUp: ['PageUp', 33],
+  PageDown: ['PageDown', 34],
+  Insert: ['Insert', 45],
+  Space: [' ', 32],
+};
+
+async function pressKey(cdp, sessionId, combo) {
+  const parts = String(combo ?? '').split('+').map((part) => part.trim()).filter(Boolean);
+  const key = parts.pop() ?? '';
+  if (!key) throw new Error('press 需要 key，例如 Enter 或 Control+A');
+  const modifiers = parts.reduce((mask, part) => {
+    const name = part.toLowerCase();
+    if (name === 'alt') return mask | 1;
+    if (name === 'control' || name === 'ctrl') return mask | 2;
+    if (name === 'meta' || name === 'cmd') return mask | 4;
+    if (name === 'shift') return mask | 8;
+    return mask;
+  }, 0);
+  const [code, vk] = KEY_CODES[key] ?? [key.length === 1 ? `Key${key.toUpperCase()}` : key, key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0];
+  const base = {
+    key,
+    code,
+    modifiers,
+    windowsVirtualKeyCode: vk,
+    nativeVirtualKeyCode: vk,
+  };
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base }, sessionId);
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, sessionId);
+  return { key: combo, modifiers };
+}
+
+async function waitForPage(cdp, sessionId, options = {}) {
+  const timeout = Number(options.timeout_ms) > 0 ? Number(options.timeout_ms) : 30_000;
+  const selector = String(options.selector ?? '').trim();
+  const text = String(options.text ?? '');
+  const url = String(options.url ?? '').trim();
+  const expression = String(options.expression ?? options.script ?? '').trim();
+  if (!selector && !text && !url && !expression) {
+    throw new Error('wait 需要 selector / text / url / expression 至少一个');
+  }
+  const deadline = Date.now() + timeout;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await evaluate(cdp, sessionId, `(() => {
+      const selector = ${JSON.stringify(selector)};
+      const text = ${JSON.stringify(text)};
+      const url = ${JSON.stringify(url)};
+      const expression = ${JSON.stringify(expression)};
+      const result = { url: location.href, title: document.title };
+      if (selector) {
+        const element = document.querySelector(selector);
+        result.selectorFound = Boolean(element);
+        if (element && typeof element.getBoundingClientRect === 'function') {
+          const rect = element.getBoundingClientRect();
+          result.selectorVisible = rect.width > 0 && rect.height > 0;
+        }
+        if (!element) return { ...result, ok: false };
+      }
+      if (text) {
+        const bodyText = document.body ? document.body.innerText : '';
+        result.textFound = bodyText.includes(text);
+        if (!result.textFound) return { ...result, ok: false };
+      }
+      if (url) {
+        result.urlMatched = location.href.includes(url);
+        if (!result.urlMatched) return { ...result, ok: false };
+      }
+      if (expression) {
+        try {
+          result.expressionValue = Boolean(Function('"use strict"; return (' + expression + ')')());
+        } catch (error) {
+          return { ...result, ok: false, error: String(error) };
+        }
+        if (!result.expressionValue) return { ...result, ok: false };
+      }
+      return { ...result, ok: true };
+    })()`).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    if (last && last.ok) return { waited: timeout - Math.max(0, deadline - Date.now()), ...last };
+    await sleep(250);
+  }
+  throw new Error(`等待超时（${timeout}ms）：${JSON.stringify(last)}`);
+}
+
+async function pageSnapshot(cdp, sessionId, { maxText = 6000, maxLinks = 80, maxFields = 60 } = {}) {
+  return evaluate(cdp, sessionId, `(() => {
+    const clip = (value, limit) => String(value ?? '').replace(/\\s+/g, ' ').trim().slice(0, limit);
+    const links = Array.from(document.querySelectorAll('a[href]'))
+      .slice(0, ${Number(maxLinks) || 80})
+      .map((a) => ({ text: clip(a.innerText, 80), href: a.href }))
+      .filter((item) => item.href && !item.href.startsWith('javascript:'));
+    const fields = Array.from(document.querySelectorAll('input, textarea, select'))
+      .slice(0, ${Number(maxFields) || 60})
+      .map((element) => ({
+        tag: element.tagName.toLowerCase(),
+        type: element.type || '',
+        name: element.name || '',
+        id: element.id || '',
+        placeholder: element.placeholder || '',
+        label: element.labels && element.labels[0] ? clip(element.labels[0].innerText, 80) : '',
+        value: element.type === 'password' ? '' : clip(element.value, 120),
+        options: element.tagName === 'SELECT'
+          ? Array.from(element.options).slice(0, 20).map((option) => ({ value: option.value, text: clip(option.text, 60) }))
+          : undefined,
+      }));
+    const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'))
+      .slice(0, 60)
+      .map((element) => clip(element.innerText || element.value, 80))
+      .filter(Boolean);
+    return {
+      url: location.href,
+      title: document.title,
+      text: clip(document.body ? document.body.innerText : '', ${Number(maxText) || 6000}),
+      links,
+      fields,
+      buttons,
+      scroll: { x: window.scrollX, y: window.scrollY, width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
+    };
+  })()`);
 }
 
 async function toolListAndBind(args) {
@@ -963,16 +1181,39 @@ async function toolListAndBind(args) {
   const live = new Map([...instances.values()].map((instance) => [instance.profileId, instance.sessionId]));
   const mappings = new Map(readWorkspaceState().mappings.map((item) => [item.profile_id, item]));
 
-  if (action === 'list') {
-    const profiles = await api('GET', '/profiles', { query: args.folder ? { folder: args.folder } : undefined });
-    return formatProfiles(asArray(profiles), live, mappings);
+  if (action === 'list' || action === 'folders') {
+    if (action === 'folders') {
+      return JSON.stringify(await foldersOverview({ includeProfiles: args.include_profiles === true }), null, 2);
+    }
+    const all = asArray(await api('GET', '/profiles'));
+    const folder = cleanFolderName(args.folder);
+    const query = String(args.query ?? '').trim().toLowerCase();
+    let filtered = folder ? all.filter((profile) => folderLabel(profile.folder) === folder) : all;
+    if (query) {
+      filtered = filtered.filter((profile) => `${profile.name ?? ''} ${profile.id} ${profile.folder ?? ''}`.toLowerCase().includes(query));
+    }
+    const limit = Number(args.limit) > 0 ? Math.trunc(Number(args.limit)) : filtered.length;
+    const shown = filtered.slice(0, limit);
+    const counts = new Map();
+    for (const profile of all) {
+      const key = folderLabel(profile.folder);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const header = `📁 文件夹 ${counts.size} 个：${[...counts.entries()].map(([name, n]) => `${name}(${n})`).join(' / ')}`;
+    const body = formatProfiles(shown, live, mappings);
+    return shown.length === filtered.length
+      ? `${header}\n${body}`
+      : `${header}\n${body}\n（显示 ${shown.length}/${filtered.length}；用 limit / folder / query 缩小范围）`;
   }
 
   if (action === 'bind') {
     const profileId = String(args.profile_id ?? '').trim();
     if (!profileId) throw new Error('action=bind 需要 profile_id');
     const name = await profileName(profileId);
-    const session = await bind(sessionIdOf(args), profileId, name);
+    const session = await bind(sessionIdOf(args), profileId, name, {
+      headless: args.headless === true,
+      password: args.password,
+    });
     const owned = ownedBy(session.sessionId).length;
     return `已绑定并启动：${session.name}\nprofile_id: ${profileId}\nsession_id: ${session.sessionId}\n该会话现在有 ${owned} 个实例${owned > 1 ? '（每个实例在面板里各占一个标签）' : ''}\nCDP page session: ${session.pageSession}`;
   }
@@ -981,17 +1222,131 @@ async function toolListAndBind(args) {
     const profiles = await api('GET', '/profiles');
     const list = asArray(profiles);
     const busy = new Set(live.keys());
+    const folder = cleanFolderName(args.folder);
     for (const profile of list) {
       if (busy.has(profile.id)) continue;
-      if (String(profile.status ?? '').toLowerCase() === 'running') continue;
+      const running = profile.running === true || String(profile.status ?? '').toLowerCase() === 'running';
+      if (running) continue;
+      if (folder && folderLabel(profile.folder) !== folder) continue;
       const name = String(profile.name ?? '') || profile.id;
-      const instance = await bind(sessionIdOf(args), profile.id, name);
-      return `已自动绑定：${instance.name}\nprofile_id: ${profile.id}\nsession_id: ${instance.sessionId}`;
+      const instance = await bind(sessionIdOf(args), profile.id, name, {
+        headless: args.headless === true,
+        password: args.password,
+      });
+      return `已自动绑定：${instance.name}\nprofile_id: ${profile.id}\nsession_id: ${instance.sessionId}\n文件夹：${folderLabel(profile.folder)}`;
     }
-    throw new Error('没有空闲的 profile 可自动绑定');
+    throw new Error(folder ? `文件夹「${folder}」里没有空闲的 profile` : '没有空闲的 profile 可自动绑定');
   }
 
   throw new Error(`未知 action：${action}`);
+}
+
+async function toolFolderList(args) {
+  return JSON.stringify(await foldersOverview({ includeProfiles: args.include_profiles === true }), null, 2);
+}
+
+async function toolFolderRename(args) {
+  const folder = cleanFolderName(args.folder);
+  const name = cleanFolderName(args.name);
+  if (!folder) throw new Error('folder_rename 需要 folder');
+  if (!name) throw new Error('folder_rename 需要 name');
+  const result = await api('PATCH', `/folders/${encodeURIComponent(folder)}`, { body: { name } });
+  return JSON.stringify({ renamed: folder, to: name, result, folders: (await foldersOverview()).folders }, null, 2);
+}
+
+async function toolFolderDelete(args) {
+  const folder = cleanFolderName(args.folder);
+  if (!folder) throw new Error('folder_delete 需要 folder');
+  const deleteProfiles = args.delete_profiles === true;
+  const result = await api('DELETE', `/folders/${encodeURIComponent(folder)}`, {
+    query: { delete_profiles: deleteProfiles ? 'true' : 'false' },
+  });
+  return JSON.stringify({
+    deleted_folder: folder,
+    delete_profiles: deleteProfiles,
+    result,
+    folders: (await foldersOverview()).folders,
+  }, null, 2);
+}
+
+async function toolProfileGet(args) {
+  const profileId = String(args.profile_id ?? args.id ?? '').trim();
+  if (!profileId) throw new Error('profile_get 需要 profile_id');
+  const profile = await api('GET', `/profiles/${encodeURIComponent(profileId)}`);
+  return JSON.stringify(profile, null, 2);
+}
+
+async function toolProfileCreate(args) {
+  const folder = cleanFolderName(args.folder);
+  let fingerprint = args.fingerprint;
+  let generatedFor = '';
+  if (!fingerprint) {
+    const platform = String(args.platform ?? '').trim();
+    generatedFor = platform;
+    const response = await api('GET', platform ? `/fingerprint/new/${encodeURIComponent(platform)}` : '/fingerprint/new');
+    fingerprint = response?.fingerprint ?? response;
+  }
+  const body = { fingerprint };
+  for (const key of ['name', 'notes', 'proxy', 'proxy_id', 'color', 'refresh_rate']) {
+    if (args[key] !== undefined && args[key] !== null && args[key] !== '') body[key] = args[key];
+  }
+  if (Array.isArray(args.extensions)) body.extensions = args.extensions;
+  const path = folder ? `/folders/${encodeURIComponent(folder)}/profiles` : '/profiles';
+  const profile = await api('POST', path, { body });
+  return JSON.stringify({ created: profile, folder: folder || '', platform: generatedFor }, null, 2);
+}
+
+async function toolProfileEdit(args) {
+  const profileId = String(args.profile_id ?? args.id ?? '').trim();
+  if (!profileId) throw new Error('profile_edit 需要 profile_id');
+  const body = {};
+  for (const key of ['name', 'notes', 'folder', 'proxy_id', 'proxy', 'color', 'refresh_rate', 'rev', 'password']) {
+    if (args[key] !== undefined) body[key] = args[key];
+  }
+  if (Array.isArray(args.extensions)) body.extensions = args.extensions;
+  if (args.fingerprint && typeof args.fingerprint === 'object') body.fingerprint = args.fingerprint;
+  if (Object.keys(body).length === 0) throw new Error('profile_edit 没有可修改的字段');
+  const profile = await api('PATCH', `/profiles/${encodeURIComponent(profileId)}`, { body });
+  return JSON.stringify({ edited: profileId, changes: Object.keys(body), profile }, null, 2);
+}
+
+async function toolProfileDelete(args) {
+  const profileId = String(args.profile_id ?? args.id ?? '').trim();
+  if (!profileId) throw new Error('profile_delete 需要 profile_id');
+  const result = await api('DELETE', `/profiles/${encodeURIComponent(profileId)}`);
+  return JSON.stringify({ trashed: profileId, result }, null, 2);
+}
+
+async function toolProxyList() {
+  const proxies = asArray(await api('GET', '/proxies'));
+  return JSON.stringify(proxies, null, 2);
+}
+
+async function toolProxyAdd(args) {
+  const body = {};
+  for (const key of ['proxy', 'kind', 'host', 'port', 'username', 'password', 'name', 'country', 'notes']) {
+    if (args[key] !== undefined && args[key] !== null && args[key] !== '') body[key] = args[key];
+  }
+  if (!body.proxy && !body.host) throw new Error('proxy_add 需要 proxy 字符串或 host+port');
+  const proxy = await api('POST', '/proxies', { body });
+  return JSON.stringify({ added: proxy }, null, 2);
+}
+
+async function toolProxyDelete(args) {
+  const proxyId = String(args.proxy_id ?? args.id ?? '').trim();
+  if (!proxyId) throw new Error('proxy_delete 需要 proxy_id');
+  const result = await api('DELETE', `/proxies/${encodeURIComponent(proxyId)}`);
+  return JSON.stringify({ deleted: proxyId, result }, null, 2);
+}
+
+async function toolFingerprintNew(args) {
+  const platform = String(args.platform ?? '').trim();
+  const response = await api('GET', platform ? `/fingerprint/new/${encodeURIComponent(platform)}` : '/fingerprint/new');
+  return JSON.stringify(response, null, 2);
+}
+
+async function toolFingerprintList() {
+  return JSON.stringify(asArray(await api('GET', '/fingerprints')), null, 2);
 }
 
 async function toolSessionAttach(args) {
@@ -1000,7 +1355,10 @@ async function toolSessionAttach(args) {
   if (!profileId) throw new Error('session_attach 需要 profile_id');
   const name = String(args.name ?? '').trim() || (await profileName(profileId));
   const existing = instances.get(profileId);
-  const instance = await attachRunning(sessionId, profileId, name);
+  const instance = await attachRunning(sessionId, profileId, name, {
+    headless: args.headless === true,
+    password: args.password,
+  });
   const owned = ownedBy(sessionId).length;
   return `${existing ? '已复用' : '已接管'}实例：${instance.name}\nprofile_id: ${profileId}\nsession_id: ${sessionId}\n该会话现在有 ${owned} 个实例\nCDP page session: ${instance.pageSession}`;
 }
@@ -1032,6 +1390,7 @@ async function toolInteract(args) {
   const action = String(args.action ?? '');
   const cdp = instance.cdp;
   const sid = instance.pageSession;
+  const selector = String(args.selector ?? '').trim();
 
   if (action === 'click') {
     const result = await click(cdp, sid, args);
@@ -1051,7 +1410,225 @@ async function toolInteract(args) {
     const value = await evaluate(cdp, sid, script);
     return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   }
+  if (action === 'hover') {
+    if (!selector) throw new Error('hover 需要 selector');
+    const box = await boxOf(cdp, sid, selector);
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: Math.round(box.x + box.width / 2),
+      y: Math.round(box.y + box.height / 2),
+      button: 'none',
+    }, sid);
+    return `已悬停 ${selector}`;
+  }
+  if (action === 'press') {
+    const key = String(args.key ?? '').trim();
+    if (!key) throw new Error('press 需要 key，例如 Enter 或 Control+A');
+    const result = await pressKey(cdp, sid, key);
+    return `已按键 ${result.key}`;
+  }
+  if (action === 'select') {
+    if (!selector) throw new Error('select 需要 selector');
+    const value = String(args.value ?? args.text ?? '');
+    const result = await evaluate(cdp, sid, `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) return { ok: false, error: 'not found' };
+      if (element.tagName !== 'SELECT') return { ok: false, error: 'not a select' };
+      element.value = ${JSON.stringify(value)};
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true, value: element.value, selectedIndex: element.selectedIndex };
+    })()`);
+    if (result && result.ok === false) throw new Error(`select 失败：${result.error}`);
+    return JSON.stringify(result);
+  }
+  if (action === 'check' || action === 'uncheck') {
+    if (!selector) throw new Error(`${action} 需要 selector`);
+    const checked = action === 'check';
+    const result = await evaluate(cdp, sid, `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) return { ok: false, error: 'not found' };
+      if (element.checked !== ${checked}) element.click();
+      return { ok: true, checked: element.checked };
+    })()`);
+    if (result && result.ok === false) throw new Error(`${action} 失败：${result.error}`);
+    return JSON.stringify(result);
+  }
+  if (action === 'back' || action === 'forward') {
+    const { currentIndex, entries = [] } = await cdp.send('Page.getNavigationHistory', {}, sid);
+    const target = entries[currentIndex + (action === 'back' ? -1 : 1)];
+    if (!target) return `没有可${action === 'back' ? '后退' : '前进'}的历史`;
+    await cdp.send('Page.navigateToHistoryEntry', { entryId: target.id }, sid);
+    await sleep(600);
+    return `${action === 'back' ? '已后退' : '已前进'}到 ${target.url}`;
+  }
+  if (action === 'reload') {
+    await cdp.send('Page.reload', { ignoreCache: args.ignore_cache === true }, sid);
+    await sleep(800);
+    return '已刷新';
+  }
+  if (action === 'get_text') {
+    if (!selector) return String(await evaluate(cdp, sid, 'document.body ? document.body.innerText : "'));
+    return String(await evaluate(cdp, sid, `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      return element ? element.innerText : '';
+    })()`));
+  }
+  if (action === 'get_html') {
+    const target = selector
+      ? `(() => { const element = document.querySelector(${JSON.stringify(selector)}); return element ? element.outerHTML : ''; })()`
+      : 'document.documentElement.outerHTML';
+    return String(await evaluate(cdp, sid, target));
+  }
+  if (action === 'get_value') {
+    if (!selector) throw new Error('get_value 需要 selector');
+    return String(await evaluate(cdp, sid, `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      return element ? element.value : '';
+    })()`));
+  }
+  if (action === 'exists') {
+    if (!selector) throw new Error('exists 需要 selector');
+    const result = await evaluate(cdp, sid, `(() => {
+      const list = document.querySelectorAll(${JSON.stringify(selector)});
+      const first = list[0];
+      if (!first) return { exists: false, count: 0, visible: false };
+      const rect = first.getBoundingClientRect();
+      return { exists: true, count: list.length, visible: rect.width > 0 && rect.height > 0 };
+    })()`);
+    return JSON.stringify(result);
+  }
+  if (action === 'count') {
+    if (!selector) throw new Error('count 需要 selector');
+    return String(await evaluate(cdp, sid, `document.querySelectorAll(${JSON.stringify(selector)}).length`));
+  }
+  if (action === 'links') {
+    const result = await evaluate(cdp, sid, `Array.from(document.querySelectorAll('a[href]')).slice(0, 200).map((a) => ({ text: (a.innerText || '').trim().slice(0, 120), href: a.href })).filter((item) => item.href)`);
+    return JSON.stringify(result, null, 2);
+  }
+  if (action === 'wait') {
+    const result = await waitForPage(cdp, sid, args);
+    return JSON.stringify(result);
+  }
+  if (action === 'snapshot') {
+    const result = await pageSnapshot(cdp, sid, args);
+    return JSON.stringify(result, null, 2);
+  }
+  if (action === 'tabs') {
+    return toolSessionTabs({ ...args, session_id: instance.sessionId, profile_id: instance.profileId, action: String(args.tab_action ?? 'list') });
+  }
   throw new Error(`未知 action：${action}`);
+}
+
+async function toolSessionStatus(args) {
+  const sessionId = sessionIdOf(args);
+  const owned = ownedBy(sessionId);
+  if (owned.length === 0) return `会话 ${sessionId} 当前没有实例。先 list_and_bind_profile bind 或 session_attach。`;
+  const rows = [];
+  for (const instance of owned) {
+    const info = await evaluate(instance.cdp, instance.pageSession, '({ url: location.href, title: document.title })').catch((error) => ({
+      url: '',
+      title: `读取失败：${error instanceof Error ? error.message : String(error)}`,
+    }));
+    rows.push({
+      profile_id: instance.profileId,
+      name: instance.name,
+      session_id: instance.sessionId,
+      target_id: instance.targetId,
+      page_session: instance.pageSession,
+      url: info?.url ?? '',
+      title: info?.title ?? '',
+      started_at: new Date(instance.startedAt).toISOString(),
+    });
+  }
+  return JSON.stringify({ session_id: sessionId, count: rows.length, instances: rows }, null, 2);
+}
+
+async function toolSessionTabs(args) {
+  const instance = requireInstance(args);
+  const cdp = instance.cdp;
+  const action = String(args.action ?? 'list');
+
+  const listPages = async () => {
+    const { targetInfos = [] } = await cdp.send('Target.getTargets', {});
+    return targetInfos.filter((target) => target.type === 'page');
+  };
+
+  if (action === 'list') {
+    const pages = await listPages();
+    return JSON.stringify(pages.map((target, index) => ({
+      index,
+      target_id: target.targetId,
+      url: target.url,
+      title: target.title,
+      active: target.targetId === instance.targetId,
+    })), null, 2);
+  }
+
+  if (action === 'open') {
+    const url = String(args.url ?? 'about:blank').trim() || 'about:blank';
+    const { targetId } = await cdp.send('Target.createTarget', { url });
+    instance.pageSession = await attachTarget(cdp, targetId);
+    instance.targetId = targetId;
+    await cdp.send('Target.activateTarget', { targetId }).catch(() => {});
+    const info = await evaluate(cdp, instance.pageSession, '({ url: location.href, title: document.title })').catch(() => ({ url, title: '' }));
+    return `已新建标签 ${targetId}\n${info.url}\n${info.title}`;
+  }
+
+  if (action === 'switch') {
+    const pages = await listPages();
+    const target = args.target_id
+      ? pages.find((page) => page.targetId === String(args.target_id))
+      : pages[Number(args.index)];
+    if (!target) throw new Error(`没有这个标签：${args.target_id ?? args.index}`);
+    instance.pageSession = await attachTarget(cdp, target.targetId);
+    instance.targetId = target.targetId;
+    await cdp.send('Target.activateTarget', { targetId: target.targetId }).catch(() => {});
+    return `已切换 ${target.targetId}\n${target.url}\n${target.title}`;
+  }
+
+  if (action === 'close') {
+    const pages = await listPages();
+    const target = args.target_id
+      ? pages.find((page) => page.targetId === String(args.target_id))
+      : args.index !== undefined ? pages[Number(args.index)] : pages.find((page) => page.targetId === instance.targetId);
+    if (!target) throw new Error('没有可关闭的标签');
+    await cdp.send('Target.closeTarget', { targetId: target.targetId });
+    await sleep(300);
+    const left = await listPages();
+    const next = left.find((page) => page.url && !page.url.startsWith('chrome://')) ?? left[0];
+    if (next) {
+      instance.pageSession = await attachTarget(cdp, next.targetId);
+      instance.targetId = next.targetId;
+      return `已关闭 ${target.targetId}\n当前标签：${next.url}`;
+    }
+    throw new Error(`已关闭 ${target.targetId}，实例里没有剩余页面`);
+  }
+
+  throw new Error(`tabs 未知 action：${action}`);
+}
+
+async function toolSessionWait(args) {
+  const instance = requireInstance(args);
+  return JSON.stringify(await waitForPage(instance.cdp, instance.pageSession, args));
+}
+
+async function toolSessionSnapshot(args) {
+  const instance = requireInstance(args);
+  const snapshot = await pageSnapshot(instance.cdp, instance.pageSession, args);
+  return JSON.stringify(snapshot, null, 2);
+}
+
+async function toolSessionScreenshot(args) {
+  const instance = requireInstance(args);
+  const { data } = await instance.cdp.send('Page.captureScreenshot', {
+    format: 'png',
+    fromSurface: true,
+    captureBeyondViewport: args.full_page === true,
+  }, instance.pageSession, 30_000);
+  return {
+    content: [{ type: 'image', data, mimeType: 'image/png' }],
+  };
 }
 
 async function toolExtract(args) {
@@ -1260,16 +1837,15 @@ async function toolServerControl(args) {
   return JSON.stringify(result, null, 2);
 }
 
-async function toolServerSync() {
+async function toolServerSync(args) {
   const status = await serverStatus();
-  const [profiles, folders, proxies, running] = await Promise.all([
-    api('GET', '/profiles').catch(() => []),
-    api('GET', '/folders').catch(() => []),
+  const includeProfiles = args.include_profiles !== false;
+  const [overview, proxies, running] = await Promise.all([
+    foldersOverview({ includeProfiles: false }),
     api('GET', '/proxies').catch(() => []),
     api('GET', '/running').catch(() => []),
   ]);
-  const profileList = asArray(profiles);
-  const folderList = asArray(folders);
+  const profiles = includeProfiles ? asArray(await api('GET', '/profiles').catch(() => [])) : undefined;
   const proxyList = asArray(proxies);
   const runningList = asArray(running);
   return JSON.stringify(
@@ -1278,14 +1854,15 @@ async function toolServerSync() {
       version: status.version,
       port: status.port,
       dataRoot: status.dataRoot,
-      profileCount: profileList.length,
-      folderCount: folderList.length,
+      folderCount: overview.count,
+      folderSummary: overview.folders,
+      profileCount: overview.totalProfiles,
       proxyCount: proxyList.length,
       runningCount: runningList.length,
-      profiles: profileList,
-      folders: folderList,
+      folders: overview.folders.map((item) => item.folder).filter(Boolean),
       proxies: proxyList,
       running: runningList,
+      profiles,
     },
     null,
     2,
@@ -1300,11 +1877,28 @@ const HANDLERS = {
   session_extract_dom: toolExtract,
   session_manage_cookies: toolCookies,
   session_stop_and_release: toolStop,
+  session_status: toolSessionStatus,
+  session_tabs: toolSessionTabs,
+  session_wait: toolSessionWait,
+  session_snapshot: toolSessionSnapshot,
+  session_screenshot: toolSessionScreenshot,
   workspace_state: toolWorkspaceState,
   skill_list: toolSkillList,
   skill_save: toolSkillSave,
   skill_assign: toolSkillAssign,
   skill_run: toolSkillRun,
+  folder_list: toolFolderList,
+  folder_rename: toolFolderRename,
+  folder_delete: toolFolderDelete,
+  profile_get: toolProfileGet,
+  profile_create: toolProfileCreate,
+  profile_edit: toolProfileEdit,
+  profile_delete: toolProfileDelete,
+  proxy_list: toolProxyList,
+  proxy_add: toolProxyAdd,
+  proxy_delete: toolProxyDelete,
+  fingerprint_new: toolFingerprintNew,
+  fingerprint_list: toolFingerprintList,
   server_status: toolServerStatus,
   server_control: toolServerControl,
   server_sync: toolServerSync,
@@ -1362,8 +1956,12 @@ async function handle(message) {
       return;
     }
     try {
-      const text = await handler(args);
-      reply(id, { content: [{ type: 'text', text: String(text) }] });
+      const result = await handler(args);
+      if (result && typeof result === 'object' && Array.isArray(result.content)) {
+        reply(id, result);
+      } else {
+        reply(id, { content: [{ type: 'text', text: String(result) }] });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       reply(id, { content: [{ type: 'text', text: message }], isError: true });

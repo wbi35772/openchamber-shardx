@@ -1,24 +1,29 @@
 {
   "name": "shardx",
-  "version": "1.2.0",
-  "description": "ShardX fingerprint-browser workspace tools exposed over MCP (stdio): isolated sessions, shared mappings, reusable skills, and launcher control.",
+  "version": "1.3.0",
+  "description": "ShardX fingerprint-browser workspace tools exposed over MCP (stdio): folder/profile management, isolated sessions, shared mappings, reusable skills, and launcher control.",
   "transport": "stdio",
   "tools": [
     {
       "name": "list_and_bind_profile",
-      "description": "列出本机 ShardX 指纹环境，或把某个空闲 profile 绑定到当前会话并启动实例（同一 profile 只能被一个会话独占，一个会话可以有多个实例）。",
+      "description": "列出本机 ShardX 指纹环境（带文件夹分组统计），或把某个空闲 profile 绑定到当前会话并启动实例；action=folders 只返回分组摘要。同一 profile 只能被一个会话独占，一个会话可以有多个实例。",
       "inputSchema": {
         "type": "object",
         "properties": {
           "session_id": {
             "type": "string",
-            "description": "会话标识，用于隔离实例；同一次对话保持一致，默认 default",
-            "default": "default"
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
           },
           "action": {
             "type": "string",
-            "enum": ["list", "bind", "auto-bind"],
-            "description": "list=只列出；bind=绑定 profile_id；auto-bind=自动挑一个未占用且未运行的"
+            "enum": [
+              "list",
+              "folders",
+              "bind",
+              "auto-bind"
+            ],
+            "description": "list=列出环境；folders=只看分组；bind=绑定 profile_id；auto-bind=自动挑一个未占用且未运行的"
           },
           "profile_id": {
             "type": "string",
@@ -26,10 +31,32 @@
           },
           "folder": {
             "type": "string",
-            "description": "按文件夹筛选（action=list 时可选）"
+            "description": "按文件夹筛选（list / auto-bind 时可选）"
+          },
+          "query": {
+            "type": "string",
+            "description": "按名称 / ID / 文件夹模糊筛选（action=list）"
+          },
+          "limit": {
+            "type": "number",
+            "description": "action=list 最多显示多少个环境"
+          },
+          "include_profiles": {
+            "type": "boolean",
+            "description": "action=folders 时是否带上每个分组的 profile 列表"
+          },
+          "headless": {
+            "type": "boolean",
+            "description": "无头启动（action=bind / auto-bind）"
+          },
+          "password": {
+            "type": "string",
+            "description": "受密码保护的 profile 需要密码"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -38,11 +65,31 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "session_id": { "type": "string", "default": "default" },
-          "profile_id": { "type": "string", "description": "要接管的 profile ID" },
-          "name": { "type": "string", "description": "可选显示名，默认取 ShardX 里的环境名" }
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "要接管的 profile ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "可选显示名，默认取 ShardX 里的环境名"
+          },
+          "headless": {
+            "type": "boolean",
+            "description": "实例没在运行时是否无头启动"
+          },
+          "password": {
+            "type": "string",
+            "description": "受密码保护的 profile 需要密码"
+          }
         },
-        "required": ["profile_id"]
+        "required": [
+          "profile_id"
+        ]
       }
     },
     {
@@ -51,37 +98,137 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "session_id": { "type": "string", "default": "default" },
-          "profile_id": { "type": "string", "description": "会话内多实例时指定要操作的实例" },
-          "url": { "type": "string", "description": "目标 URL" },
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "会话内多实例时指定要操作的实例；省略时用该会话唯一的实例"
+          },
+          "url": {
+            "type": "string",
+            "description": "目标 URL"
+          },
           "wait_until": {
             "type": "string",
-            "enum": ["load", "domcontentloaded", "networkidle"],
+            "enum": [
+              "load",
+              "domcontentloaded",
+              "networkidle"
+            ],
             "default": "networkidle"
           }
         },
-        "required": ["url"]
+        "required": [
+          "url"
+        ]
       }
     },
     {
       "name": "session_interact",
-      "description": "在当前会话实例中执行点击、输入、滚动或任意 JS。会话有多个实例时用 profile_id 指定。",
+      "description": "在当前会话实例中执行交互：click / type / scroll / hover / press / select / check / uncheck / back / forward / reload / get_text / get_html / get_value / exists / count / links / wait / snapshot / tabs / evaluate_js。",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "session_id": { "type": "string", "default": "default" },
-          "profile_id": { "type": "string", "description": "会话内多实例时指定要操作的实例" },
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "会话内多实例时指定要操作的实例；省略时用该会话唯一的实例"
+          },
           "action": {
             "type": "string",
-            "enum": ["click", "type", "scroll", "evaluate_js"]
+            "enum": [
+              "click",
+              "type",
+              "scroll",
+              "hover",
+              "press",
+              "select",
+              "check",
+              "uncheck",
+              "back",
+              "forward",
+              "reload",
+              "get_text",
+              "get_html",
+              "get_value",
+              "exists",
+              "count",
+              "links",
+              "wait",
+              "snapshot",
+              "tabs",
+              "evaluate_js"
+            ]
           },
-          "selector": { "type": "string", "description": "CSS 选择器（click/type/scroll 可选）" },
-          "text": { "type": "string", "description": "输入文本（action=type）" },
-          "x": { "type": "number", "description": "点击 X 坐标（可选，配合 y）" },
-          "y": { "type": "number", "description": "点击 Y 坐标 / 滚动像素（可选）" },
-          "script": { "type": "string", "description": "JS 代码（action=evaluate_js）" }
+          "selector": {
+            "type": "string",
+            "description": "CSS 选择器"
+          },
+          "text": {
+            "type": "string",
+            "description": "输入文本（action=type）"
+          },
+          "key": {
+            "type": "string",
+            "description": "按键，例如 Enter、Escape、Control+A（action=press）"
+          },
+          "value": {
+            "type": "string",
+            "description": "select 的选项值"
+          },
+          "url": {
+            "type": "string",
+            "description": "wait 需要匹配的 URL 片段 / tabs 新标签地址"
+          },
+          "expression": {
+            "type": "string",
+            "description": "wait 需要为真的 JS 表达式"
+          },
+          "timeout_ms": {
+            "type": "number",
+            "description": "wait 超时毫秒，默认 30000"
+          },
+          "tab_action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "open",
+              "switch",
+              "close"
+            ],
+            "description": "action=tabs 时的标签操作"
+          },
+          "index": {
+            "type": "number",
+            "description": "标签序号（tabs switch/close）"
+          },
+          "target_id": {
+            "type": "string",
+            "description": "标签 targetId（tabs switch/close）"
+          },
+          "x": {
+            "type": "number",
+            "description": "点击 X 坐标（可选，配合 y）"
+          },
+          "y": {
+            "type": "number",
+            "description": "点击 Y 坐标 / 滚动像素（可选）"
+          },
+          "script": {
+            "type": "string",
+            "description": "JS 代码（action=evaluate_js）"
+          }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -90,12 +237,27 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "session_id": { "type": "string", "default": "default" },
-          "profile_id": { "type": "string", "description": "会话内多实例时指定要操作的实例" },
-          "selector": { "type": "string", "description": "CSS 选择器，省略则整页" },
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "会话内多实例时指定要操作的实例；省略时用该会话唯一的实例"
+          },
+          "selector": {
+            "type": "string",
+            "description": "CSS 选择器，省略则整页"
+          },
           "mode": {
             "type": "string",
-            "enum": ["markdown", "html", "forms", "text"],
+            "enum": [
+              "markdown",
+              "html",
+              "forms",
+              "text"
+            ],
             "default": "markdown"
           }
         }
@@ -107,15 +269,31 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "session_id": { "type": "string", "default": "default" },
-          "profile_id": { "type": "string", "description": "会话内多实例时指定要操作的实例" },
-          "action": { "type": "string", "enum": ["get", "set", "clear"] },
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "会话内多实例时指定要操作的实例；省略时用该会话唯一的实例"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "get",
+              "set",
+              "clear"
+            ]
+          },
           "cookies_json": {
             "type": "string",
             "description": "Cookie 数组 JSON（action=set），字段同 CDP Network.setCookies"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -124,8 +302,15 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "session_id": { "type": "string", "default": "default" },
-          "profile_id": { "type": "string", "description": "只释放这个实例（可选）" }
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "只释放这个实例（可选）"
+          }
         }
       }
     },
@@ -135,14 +320,34 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "action": { "type": "string", "enum": ["get", "mapping", "unmap", "settings"] },
-          "profile_id": { "type": "string" },
-          "profile_name": { "type": "string" },
-          "session_id": { "type": "string" },
-          "source": { "type": "string" },
-          "launcher_path": { "type": "string" }
+          "action": {
+            "type": "string",
+            "enum": [
+              "get",
+              "mapping",
+              "unmap",
+              "settings"
+            ]
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "launcher_path": {
+            "type": "string"
+          }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -151,9 +356,15 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "query": { "type": "string" },
-          "profile_id": { "type": "string" },
-          "folder": { "type": "string" }
+          "query": {
+            "type": "string"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          }
         }
       }
     },
@@ -163,17 +374,33 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "已有 Skill ID；省略则新建" },
-          "name": { "type": "string" },
-          "site": { "type": "string" },
-          "url_pattern": { "type": "string" },
-          "description": { "type": "string" },
+          "id": {
+            "type": "string",
+            "description": "已有 Skill ID；省略则新建"
+          },
+          "name": {
+            "type": "string"
+          },
+          "site": {
+            "type": "string"
+          },
+          "url_pattern": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
           "steps": {
             "type": "array",
-            "items": { "type": "object" },
+            "items": {
+              "type": "object"
+            },
             "description": "步骤数组，例如 [{\"action\":\"navigate\",\"url\":\"https://example.com\"},{\"action\":\"wait\",\"ms\":800}]"
           },
-          "skill_json": { "type": "string", "description": "整个 Skill 的 JSON 字符串（与上面的字段二选一）" }
+          "skill_json": {
+            "type": "string",
+            "description": "整个 Skill 的 JSON 字符串（与上面的字段二选一）"
+          }
         }
       }
     },
@@ -183,12 +410,29 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "skill_id": { "type": "string" },
-          "target_type": { "type": "string", "enum": ["profile", "folder"] },
-          "target_id": { "type": "string" },
-          "remove": { "type": "boolean", "default": false }
+          "skill_id": {
+            "type": "string"
+          },
+          "target_type": {
+            "type": "string",
+            "enum": [
+              "profile",
+              "folder"
+            ]
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "remove": {
+            "type": "boolean",
+            "default": false
+          }
         },
-        "required": ["skill_id", "target_type", "target_id"]
+        "required": [
+          "skill_id",
+          "target_type",
+          "target_id"
+        ]
       }
     },
     {
@@ -197,17 +441,31 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "session_id": { "type": "string", "default": "default" },
-          "profile_id": { "type": "string", "description": "会话内多实例时指定目标" },
-          "skill_id": { "type": "string" }
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "会话内多实例时指定要操作的实例；省略时用该会话唯一的实例"
+          },
+          "skill_id": {
+            "type": "string"
+          }
         },
-        "required": ["skill_id"]
+        "required": [
+          "skill_id"
+        ]
       }
     },
     {
       "name": "server_status",
       "description": "读取 ShardX 启动器状态：安装发现、运行中、版本、API 端口与开关、数据目录、进程列表与共享状态文件路径。",
-      "inputSchema": { "type": "object", "properties": {} }
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "server_control",
@@ -215,16 +473,456 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "action": { "type": "string", "enum": ["start", "stop", "restart"] },
-          "launcher_path": { "type": "string" }
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop",
+              "restart"
+            ]
+          },
+          "launcher_path": {
+            "type": "string"
+          }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
       "name": "server_sync",
-      "description": "从 ShardX API 同步环境、文件夹、代理与运行中实例，返回计数与完整列表。",
-      "inputSchema": { "type": "object", "properties": {} }
+      "description": "从 ShardX API 同步分组、环境、代理与运行中实例。folderSummary 先返回，避免长 profile 列表把分组信息截断；include_profiles=false 可只拿摘要。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "include_profiles": {
+            "type": "boolean",
+            "default": true,
+            "description": "false 时不返回完整 profiles 数组"
+          }
+        }
+      }
+    },
+    {
+      "name": "session_status",
+      "description": "列出当前会话拥有的全部实例：profile、名称、CDP 页面 session、当前 URL 与标题。多实例场景先看这个再操作。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          }
+        }
+      }
+    },
+    {
+      "name": "session_tabs",
+      "description": "管理实例的浏览器标签：list 列出全部页面 target，open 新建，switch 切换，close 关闭；切换后后续工具都作用在新标签上。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "会话内多实例时指定要操作的实例；省略时用该会话唯一的实例"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "open",
+              "switch",
+              "close"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "open 时要打开的地址，默认 about:blank"
+          },
+          "index": {
+            "type": "number",
+            "description": "标签序号（switch / close）"
+          },
+          "target_id": {
+            "type": "string",
+            "description": "标签 targetId（switch / close）"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "session_wait",
+      "description": "等待页面条件满足：selector 出现、text 出现、url 包含、或 JS expression 为真；超时抛错。比盲目 sleep 稳定。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "会话内多实例时指定要操作的实例；省略时用该会话唯一的实例"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "expression": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "type": "number",
+            "default": 30000
+          }
+        }
+      }
+    },
+    {
+      "name": "session_snapshot",
+      "description": "一次性返回页面快照：URL、标题、可见文本、链接、表单字段与按钮。用于让 Agent 低成本理解页面并决定下一步。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "会话内多实例时指定要操作的实例；省略时用该会话唯一的实例"
+          },
+          "max_text": {
+            "type": "number",
+            "description": "正文最多字符，默认 6000"
+          },
+          "max_links": {
+            "type": "number",
+            "description": "链接最多条数，默认 80"
+          },
+          "max_fields": {
+            "type": "number",
+            "description": "表单字段最多条数，默认 60"
+          }
+        }
+      }
+    },
+    {
+      "name": "session_screenshot",
+      "description": "截取当前实例可见区域（或整页）PNG，直接作为图片返回。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "default": "default",
+            "description": "会话标识，用于隔离实例；同一次对话保持一致"
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "会话内多实例时指定要操作的实例；省略时用该会话唯一的实例"
+          },
+          "full_page": {
+            "type": "boolean",
+            "description": "true 时截整页"
+          }
+        }
+      }
+    },
+    {
+      "name": "folder_list",
+      "description": "读取 ShardX 的分组：每个文件夹的环境数、运行中数量、已分配 Skill；可选带上分组内 profile 列表。轻量，不受 profile 列表长度影响。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "include_profiles": {
+            "type": "boolean",
+            "description": "是否返回每个分组里的 profile 列表"
+          }
+        }
+      }
+    },
+    {
+      "name": "folder_rename",
+      "description": "重命名一个文件夹，ShardX 会同步重打所有成员的 folder 标签。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "folder",
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "folder_delete",
+      "description": "删除文件夹。delete_profiles=true 连同环境一起删；false（默认）只把环境移出分组，不删环境。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string"
+          },
+          "delete_profiles": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "folder"
+        ]
+      }
+    },
+    {
+      "name": "profile_get",
+      "description": "按 ID 读取一个指纹环境的完整配置。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id"
+        ]
+      }
+    },
+    {
+      "name": "profile_create",
+      "description": "创建一个指纹环境：不传 fingerprint 时按 platform 自动生成；folder 直接归档到分组（不存在的分组会随创建出现）。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "proxy": {
+            "type": "string",
+            "description": "代理字符串，例如 socks5://user:pass@host:port"
+          },
+          "proxy_id": {
+            "type": "string",
+            "description": "已存代理的 ID"
+          },
+          "platform": {
+            "type": "string",
+            "enum": [
+              "Windows",
+              "macOS",
+              "Linux"
+            ]
+          },
+          "color": {
+            "type": "string",
+            "description": "#rrggbb"
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "扩展库 ID 列表"
+          },
+          "refresh_rate": {
+            "type": "number",
+            "description": "声称的屏幕刷新率 24-480"
+          },
+          "fingerprint": {
+            "type": "object",
+            "description": "完整指纹对象；省略则自动生成"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile_edit",
+      "description": "修改指纹环境：改名、备注、移动到分组（folder=\"\" 取消归档）、换代理、换颜色、扩展、指纹；只改传入的字段。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string",
+            "description": "目标文件夹；\"\" 表示移出分组"
+          },
+          "proxy_id": {
+            "type": "string",
+            "description": "\"\" 解绑代理"
+          },
+          "proxy": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "refresh_rate": {
+            "type": "number"
+          },
+          "fingerprint": {
+            "type": "object"
+          },
+          "rev": {
+            "type": "number",
+            "description": "乐观锁版本；省略时用刚读到的版本"
+          },
+          "password": {
+            "type": "string",
+            "description": "受保护 profile 的密码"
+          }
+        },
+        "required": [
+          "profile_id"
+        ]
+      }
+    },
+    {
+      "name": "profile_delete",
+      "description": "把指纹环境移入 ShardX 回收站（可恢复），不是永久删除。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id"
+        ]
+      }
+    },
+    {
+      "name": "proxy_list",
+      "description": "列出已保存的代理（不返回账号密码）。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "proxy_add",
+      "description": "添加代理到代理库；已存在的相同代理会复用。传 proxy 字符串或 host+port 显式字段。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "proxy": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "socks5",
+              "http",
+              "https"
+            ]
+          },
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "type": "number"
+          },
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "proxy_delete",
+      "description": "按 ID 删除代理库里的代理。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "proxy_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "proxy_id"
+        ]
+      }
+    },
+    {
+      "name": "fingerprint_new",
+      "description": "生成一份新的唯一化指纹（不落盘）；platform 省略时用本机系统。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "enum": [
+              "Windows",
+              "macOS",
+              "Linux"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "fingerprint_list",
+      "description": "列出指纹库条目（id、标签、平台、Chrome 版本、GPU、是否内置）。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
     }
   ]
 }
