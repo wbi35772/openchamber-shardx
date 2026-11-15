@@ -941,6 +941,7 @@ Copy-Item panel, service -Destination $dst -Recurse -Force</pre></div>
     }
     if (key === 'overview') drawCharts();
   }
+  let chartsDrawn = false;
   const initial = (location.hash || '').replace('#', '') || (() => { try { return localStorage.getItem('shardx-atlas-tab'); } catch { return ''; } })() || 'overview';
   show(initial, false);
 
@@ -975,7 +976,6 @@ Copy-Item panel, service -Destination $dst -Recurse -Force</pre></div>
   lb.addEventListener('click', () => lb.classList.remove('open'));
 
   /* ---------- charts ---------- */
-  let chartsDrawn = false;
   function drawCharts() {
     if (chartsDrawn || !window.Chart) return;
     chartsDrawn = true;
