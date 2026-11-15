@@ -127,3 +127,19 @@ bun run build
 ```powershell
 Copy-Item "$env:APPDATA\shardx-workspace\state.json" "$env:APPDATA\shardx-workspace\state.backup.json"
 ```
+
+## 9. 文档与图鉴
+
+`docs/MCP-TOOLS.md` 与 `docs/canvas/tool-data.js` 都由 `manifest.json` 生成，改完工具后执行：
+
+```powershell
+bun run docs:gen        # 重新生成 MCP 工具参考与图鉴数据
+```
+
+`docs/canvas/index.html` 是自包含图鉴（每页最多约 1 MB），包含 Chart.js 图、d3 关系图、mermaid 时序图、工具搜索、截图灯箱和 `localStorage` 标签记忆。它同时发布为 Canvas 工件，工件 id：
+
+```
+06GXXCJ5G4WNT2E9Z2T6K5ZTWT-shardx-workspace
+```
+
+更新步骤：先 `canvas.read` 取当前 `version`，再 `canvas.update`（`baseVersion` 必填，`directoryPath` 指向 `docs/canvas`，`entry` 为 `index.html`）。Canvas 会自动注入固定版本的 chartjs / d3 / mermaid，**不要**把 CDN 当唯一来源；HTML 里的 CDN `<script>` 只是本地直接打开时的降级。新增截图放进 `docs/canvas/assets/`，然后重跑上面的更新。图鉴内容与仓库一起提交，保证历史版本可回溯。

@@ -71,3 +71,9 @@
 - 兼容旧服务：已把 `settings.launcher_path` 写入 `%APPDATA%\shardx-workspace\state.json`，旧服务进程也能冷启动启动器；新服务随下次 OpenChamber 重启生效，此后无需再手填。
 - 验证：`bun run typecheck`、`bun run build` 通过；独立起构建后的 `service/main.js`（临时端口/临时 state）实测 `/shardx/discover` 返回 found/running/port 40325 v2.1.4，`/workspace/server/status` 自动得到启动器路径并落盘，`/workspace/server/control start` 返回 200 且 `running:true`。
 
+## GitHub 私有仓库与文档站（2026-11-15）
+- 仓库：`https://github.com/wbi35772/openchamber-shardx`，私有，默认分支 `main`，源码包名 `openchamber-shardx` 版本 1.4.0。
+- 文档：根 `README.md`、`docs/ARCHITECTURE.md`、`docs/MCP-TOOLS.md`（由 manifest 生成，32 工具）、`docs/OPERATIONS.md`、`docs/ROADMAP.md`、`CHANGELOG.md`、`panel/README.md`。
+- Canvas 图鉴：工件 id `06GXXCJ5G4WNT2E9Z2T6K5ZTWT-shardx-workspace`；7 个标签页、Chart.js 两图、d3 依赖图、4 张 mermaid、工具搜索、截图灯箱、标签记忆。源文件在 `docs/canvas/`，更新流程见 `docs/OPERATIONS.md` 第 9 节。
+- 校验：`bun run typecheck`、`bun run validate`（指向 `package.json`）、`bun run build`、`bun run docs:gen` 全部通过；Canvas 页面在真实 viewer 中验证 charts=2、graph=6、mermaid=4、tools=32、搜索与灯箱可用；修复了总览标签首次打开时 `chartsDrawn` TDZ 导致绘图中断的问题。
+
