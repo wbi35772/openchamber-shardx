@@ -1,0 +1,152 @@
+/**
+ * Generate MCP documentation straight from manifest.json so the docs can never
+ * drift from the tool catalog. Run `bun run docs:gen` after touching tools.
+ *
+ * Outputs:
+ *   docs/MCP-TOOLS.md          human-readable tool reference
+ *   docs/canvas/tool-data.js   data consumed by the Canvas project atlas
+ */
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const manifest = JSON.parse(readFileSync(join(ROOT, 'manifest.json'), 'utf8'));
+const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+const tools = Array.isArray(manifest.tools) ? manifest.tools : [];
+
+const CATEGORIES = [
+  ['环境与实例', ['list_and_bind_profile', 'session_attach', 'session_status', 'session_stop_and_release']],
+  [
+    '页面自动化',
+    [
+      'session_navigate',
+      'session_interact',
+      'session_extract_dom',
+      'session_snapshot',
+      'session_wait',
+      'session_tabs',
+      'session_screenshot',
+      'session_manage_cookies',
+    ],
+  ],
+  [
+    '分组与环境档案',
+    ['folder_list', 'folder_rename', 'folder_delete', 'profile_get', 'profile_create', 'profile_edit', 'profile_delete'],
+  ],
+  ['代理与指纹', ['proxy_list', 'proxy_add', 'proxy_delete', 'fingerprint_new', 'fingerprint_list']],
+  ['Skill 自动化', ['skill_list', 'skill_save', 'skill_assign', 'skill_run']],
+  ['工作区状态', ['workspace_state']],
+  ['服务器控制', ['server_status', 'server_control', 'server_sync']],
+];
+
+const categoryOf = new Map();
+for (const [label, names] of CATEGORIES) {
+  for (const name of names) categoryOf.set(name, label);
+}
+for (const tool of tools) {
+  if (!categoryOf.has(tool.name)) categoryOf.set(tool.name, '其他');
+}
+
+const esc = (value) => String(value ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+const typeOf = (schema) => {
+  if (!schema) return '';
+  if (Array.isArray(schema.enum)) return `enum: ${schema.enum.join(' / ')}`;
+  if (schema.type === 'array') {
+    const item = schema.items?.type ? ` of ${schema.items.type}` : '';
+    return `array${item}`;
+  }
+  return schema.type ?? '';
+};
+const paramsOf = (tool) => {
+  const required = new Set(tool.inputSchema?.required ?? []);
+  const props = tool.inputSchema?.properties ?? {};
+  return Object.entries(props).map(([name, schema]) => ({
+    name,
+    type: typeOf(schema),
+    required: required.has(name),
+    default: schema?.default === undefined ? '' : JSON.stringify(schema.default),
+    description: schema?.description ?? '',
+  }));
+};
+const data = tools.map((tool) => ({
+  name: tool.name,
+  category: categoryOf.get(tool.name) ?? '其他',
+  description: tool.description ?? '',
+  params: paramsOf(tool),
+}));
+
+mkdirSync(join(ROOT, 'docs', 'canvas'), { recursive: true });
+
+const sections = [];
+sections.push(`# ShardX Workspace · MCP 工具参考
+
+> 自动生成，请勿手改。数据源：\`manifest.json\`（v${manifest.version}）。
+> 重新生成：\`bun run docs:gen\`
+
+MCP 服务端为 \`index.js\`（stdio、零依赖、Node ≥ 22），工具在 OpenChamber 内显示为
+\`shardx-workspace_<tool>\`。共 **${tools.length}** 个工具。
+
+## 目录
+`);
+
+for (const [label] of CATEGORIES) {
+  const list = data.filter((tool) => tool.category === label);
+  if (list.length) sections.push(`- [${label}](#${label.toLowerCase().replace(/\s+/g, '-')}) · ${list.length}`);
+}
+const others = data.filter((tool) => tool.category === '其他');
+if (others.length) sections.push(`- [其他](#其他) · ${others.length}`);
+sections.push('');
+
+sections.push(`## 调用约定
+
+- \`session_id\` 把同一轮对话的多次调用串到同一实例；不同 \`session_id\` 之间实例隔离。
+- 同一 profile 同时只能被一个会话独占；一个会话可以持有多个实例，用 \`profile_id\` 指定。
+- 所有工具失败时返回 MCP \`isError\` 与可读错误文本，不会静默成功。
+- 共享状态文件：\`%APPDATA%\\shardx-workspace\\state.json\`，可用 \`SHARDX_WORKSPACE_STATE\` 覆盖。
+`);
+
+for (const [label] of CATEGORIES) {
+  const list = data.filter((tool) => tool.category === label);
+  if (!list.length) continue;
+  sections.push(`\n## ${label}\n`);
+  sections.push('| 工具 | 作用 |');
+  sections.push('|---|---|');
+  for (const tool of list) {
+    sections.push(`| \`${tool.name}\` | ${esc(tool.description)} |`);
+  }
+  for (const tool of list) {
+    sections.push(`\n### \`${tool.name}\`\n`);
+    sections.push(tool.description);
+    if (tool.params.length) {
+      sections.push('\n| 参数 | 类型 | 必填 | 默认 | 说明 |');
+      sections.push('|---|---|---|---|---|');
+      for (const param of tool.params) {
+        sections.push(
+          `| \`${param.name}\` | ${esc(param.type)} | ${param.required ? '是' : ''} | ${esc(param.default)} | ${esc(param.description)} |`,
+        );
+      }
+    } else {
+      sections.push('\n_无参数。_');
+    }
+  }
+}
+
+if (others.length) {
+  sections.push('\n## 其他\n');
+  for (const tool of others) {
+    sections.push(`### \`${tool.name}\`\n`);
+    sections.push(tool.description);
+  }
+}
+
+writeFileSync(join(ROOT, 'docs', 'MCP-TOOLS.md'), `${sections.join('\n')}\n`, 'utf8');
+
+const payload = `/* Generated by scripts/gen-docs.mjs from manifest.json — do not edit. */
+window.__SHARDX_META__ = ${JSON.stringify({ version: manifest.version, packageVersion: pkg.version })};
+window.__SHARDX_TOOLS__ = ${JSON.stringify(data, null, 2)};
+`;
+writeFileSync(join(ROOT, 'docs', 'canvas', 'tool-data.js'), payload, 'utf8');
+
+console.log(`docs/MCP-TOOLS.md: ${tools.length} tools`);
+console.log(`docs/canvas/tool-data.js: ${data.length} tools`);

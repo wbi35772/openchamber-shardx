@@ -1,5 +1,5 @@
 import type { HostClient } from '@openchamber/sdk';
-import type { Profile, Proxy, CdpStartResult, FingerprintTemplate } from './types';
+import type { Profile, Proxy, CdpStartResult, FingerprintTemplate, RunningProfile } from './types';
 import { transport, TransportError } from './transport';
 
 export class ApiError extends Error {
@@ -217,6 +217,10 @@ export class ShardXApiClient {
     return this.call<Profile>('POST', '/profiles', undefined, body);
   }
 
+  updateProfile(id: string, body: Record<string, unknown>): Promise<Profile> {
+    return this.call<Profile>('PATCH', `/profiles/${encodeURIComponent(id)}`, undefined, body);
+  }
+
   deleteProfile(id: string): Promise<unknown> {
     return this.call<unknown>('DELETE', `/profiles/${encodeURIComponent(id)}`);
   }
@@ -233,6 +237,36 @@ export class ShardXApiClient {
     return this.call<unknown>('POST', `/profiles/${encodeURIComponent(id)}/stop`);
   }
 
+  /**
+   * Profiles that are already running. The bridge enriches every entry with a
+   * CDP websocket, including browsers started from the launcher's own window
+   * (their port is read from the profile's DevToolsActivePort file).
+   */
+  async running(): Promise<RunningProfile[]> {
+    let raw: unknown;
+    try {
+      raw = await this.call<unknown>('POST', '/instances/running');
+    } catch {
+      raw = await this.call<unknown>('GET', '/running');
+    }
+    return unwrapList<Record<string, any>>(raw)
+      .map(normalizeRunning)
+      .filter((item): item is RunningProfile => item !== null);
+  }
+
+  /**
+   * Make the launcher inject CDP flags into every browser it starts, so
+   * instances opened from the launcher window become attachable too.
+   */
+  async ensureLauncherDebugArgs(): Promise<{ changed: boolean; extraArgs: string; debugEnabled: boolean }> {
+    return this.call<{ changed: boolean; extraArgs: string; debugEnabled: boolean }>(
+      'POST',
+      '/launcher/settings',
+      undefined,
+      { ensure_debug: true },
+    );
+  }
+
   async proxies(): Promise<Proxy[]> {
     const raw = await this.call<unknown>('GET', '/proxies');
     return unwrapList<Proxy>(raw);
@@ -245,6 +279,41 @@ export class ShardXApiClient {
   fingerprintTemplate(platform: 'win' | 'mac' | 'linux'): Promise<FingerprintTemplate> {
     return this.call<FingerprintTemplate>('GET', `/fingerprint/new/${platform}`);
   }
+}
+
+function firstString(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function normalizeRunning(row: Record<string, any>): RunningProfile | null {
+  if (!row || typeof row !== 'object') return null;
+  const profileId =
+    firstString(row.profile_id) ||
+    firstString(row.profileId) ||
+    firstString(row.id) ||
+    firstString(row.profile?.id);
+  if (!profileId) return null;
+  const cdp = (row.cdp ?? row.CDP ?? {}) as Record<string, any>;
+  const cdpWebSocketDebuggerUrl =
+    firstString(row.web_socket_debugger_url) ||
+    firstString(row.webSocketDebuggerUrl) ||
+    firstString(row.ws_url) ||
+    firstString(cdp.web_socket_debugger_url) ||
+    firstString(cdp.webSocketDebuggerUrl) ||
+    firstString(cdp.ws_url);
+  const cdpHttpUrl =
+    firstString(row.http_url) ||
+    firstString(cdp.http_url) ||
+    firstString(cdp.httpUrl) ||
+    firstString(cdp.devtools_url);
+  const pidRaw = Number(row.pid ?? cdp.pid);
+  return {
+    profileId,
+    pid: Number.isFinite(pidRaw) && pidRaw > 0 ? Math.trunc(pidRaw) : null,
+    cdpWebSocketDebuggerUrl,
+    cdpHttpUrl,
+    raw: row,
+  };
 }
 
 function pick(obj: Record<string, unknown>, ...keys: string[]): unknown {

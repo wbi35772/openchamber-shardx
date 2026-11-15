@@ -23,6 +23,15 @@ export type Proxy = {
   status?: string;
 };
 
+/** One entry of ShardX `/running`: a browser that is already up with CDP. */
+export type RunningProfile = {
+  profileId: string;
+  pid: number | null;
+  cdpWebSocketDebuggerUrl: string;
+  cdpHttpUrl: string;
+  raw: Record<string, any>;
+};
+
 export type TargetInfo = {
   targetId: string;
   type: string;

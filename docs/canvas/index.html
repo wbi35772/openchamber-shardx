@@ -1,0 +1,1226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ShardX Workspace · 项目图鉴</title>
+<style>
+  :root {
+    --bg: #080b11;
+    --bg-soft: #0c111a;
+    --panel: #111826;
+    --panel-2: #151e2e;
+    --border: #1f2b3d;
+    --border-soft: #182233;
+    --text: #d9e3ef;
+    --muted: #8494a8;
+    --dim: #5d6b7d;
+    --accent: #38bdf8;
+    --accent-2: #8b5cf6;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --pink: #f472b6;
+    --radius: 14px;
+    --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    --sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1100px 500px at 15% -10%, rgba(56, 189, 248, .12), transparent 60%),
+      radial-gradient(900px 500px at 90% 0%, rgba(139, 92, 246, .12), transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: var(--mono); }
+  code {
+    background: rgba(56, 189, 248, .08);
+    border: 1px solid rgba(56, 189, 248, .16);
+    padding: .1em .38em;
+    border-radius: 6px;
+    font-size: .88em;
+    color: #9fdcff;
+  }
+  h1, h2, h3, h4 { line-height: 1.25; margin: 0; }
+  h2 { font-size: 1.5rem; letter-spacing: -.01em; }
+  h3 { font-size: 1.08rem; }
+  p { margin: .6em 0; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 22px 70px; }
+
+  /* hero */
+  .hero { padding: 44px 0 26px; }
+  .hero-top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .logo {
+    width: 46px; height: 46px; border-radius: 13px; flex: none;
+    background: linear-gradient(140deg, rgba(56,189,248,.25), rgba(139,92,246,.32));
+    border: 1px solid rgba(56,189,248,.4);
+    display: grid; place-items: center;
+    box-shadow: 0 0 28px rgba(56,189,248,.18);
+  }
+  .logo svg { width: 26px; height: 26px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--border); background: rgba(17,24,38,.7);
+    color: var(--muted); border-radius: 999px; padding: 3px 11px;
+    font-size: .78rem; letter-spacing: .02em;
+  }
+  .tag b { color: var(--text); font-weight: 600; }
+  .tag.accent { border-color: rgba(56,189,248,.35); color: #93d8ff; }
+  .tag.violet { border-color: rgba(139,92,246,.35); color: #c9b4ff; }
+  .tag.green { border-color: rgba(34,197,94,.35); color: #8ce7b0; }
+  .lede { color: var(--muted); max-width: 760px; margin-top: 14px; font-size: 1.02rem; }
+  .quick { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: 1px solid var(--border); background: var(--panel);
+    color: var(--text); border-radius: 10px; padding: 8px 14px;
+    font-size: .86rem; cursor: pointer; transition: .16s ease;
+  }
+  .btn:hover { border-color: rgba(56,189,248,.45); transform: translateY(-1px); text-decoration: none; }
+  .btn.primary { background: linear-gradient(135deg, rgba(56,189,248,.2), rgba(139,92,246,.24)); border-color: rgba(56,189,248,.4); }
+
+  /* nav */
+  .nav {
+    position: sticky; top: 0; z-index: 30;
+    margin: 18px 0 30px;
+    backdrop-filter: blur(14px);
+    background: rgba(8,11,17,.78);
+    border-top: 1px solid var(--border-soft);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .nav-inner { display: flex; gap: 4px; overflow-x: auto; padding: 9px 0; scrollbar-width: thin; }
+  .nav button {
+    flex: none; border: 0; background: transparent; color: var(--muted);
+    padding: 7px 13px; border-radius: 9px; cursor: pointer;
+    font-family: var(--sans); font-size: .88rem; white-space: nowrap;
+  }
+  .nav button:hover { color: var(--text); background: rgba(255,255,255,.04); }
+  .nav button.active { color: #061018; background: linear-gradient(135deg, #7dd3fc, #a78bfa); font-weight: 650; }
+
+  section.tab { display: none; animation: fade .22s ease; }
+  section.tab.active { display: block; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  /* layout bits */
+  .grid { display: grid; gap: 16px; }
+  .g2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .g3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .g4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .card {
+    background: linear-gradient(180deg, rgba(21,30,46,.85), rgba(14,20,31,.9));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+  }
+  .card h3 { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+  .card p { color: var(--muted); }
+  .card p:last-child { margin-bottom: 0; }
+  .card.flat { background: var(--panel); }
+  .section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin: 34px 0 14px; }
+  .section-head .kicker { color: var(--dim); font-size: .74rem; letter-spacing: .18em; text-transform: uppercase; }
+  .section-head p { color: var(--muted); margin: 0; }
+  .divider { height: 1px; background: var(--border-soft); margin: 26px 0; }
+
+  .stat { padding: 16px 18px; }
+  .stat .num { font-size: 1.9rem; font-weight: 700; letter-spacing: -.03em; background: linear-gradient(135deg,#d7f3ff,#b7a4ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .stat .label { color: var(--muted); font-size: .8rem; }
+  .stat .sub { color: var(--dim); font-size: .74rem; margin-top: 3px; }
+
+  .shot {
+    border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    background: var(--bg-soft); cursor: zoom-in; position: relative;
+  }
+  .shot img { display: block; width: 100%; height: auto; }
+  .shot span {
+    position: absolute; left: 10px; bottom: 9px; padding: 2px 9px;
+    background: rgba(8,11,17,.82); border: 1px solid var(--border);
+    border-radius: 7px; color: var(--muted); font-size: .74rem;
+  }
+  .lightbox {
+    position: fixed; inset: 0; z-index: 80; display: none;
+    background: rgba(3,6,11,.92); padding: 28px; cursor: zoom-out;
+  }
+  .lightbox.open { display: grid; place-items: center; }
+  .lightbox img { max-width: 96vw; max-height: 90vh; border-radius: 12px; border: 1px solid var(--border); }
+
+  /* charts */
+  .chart-box { position: relative; height: 260px; }
+  .chart-box.tall { height: 320px; }
+  .legend-note { color: var(--dim); font-size: .76rem; margin-top: 8px; }
+  #module-graph { width: 100%; height: 330px; display: block; }
+  .node-label { font-family: var(--sans); font-size: 11px; fill: #c7d4e2; pointer-events: none; }
+  .node circle { stroke: #0a0e14; stroke-width: 2px; }
+
+  /* mermaid */
+  .mermaid {
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px; overflow-x: auto;
+  }
+  .mermaid svg { max-width: 100%; height: auto; }
+
+  /* tables */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: .86rem; min-width: 620px; }
+  th, td { text-align: left; padding: 10px 13px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: .76rem; letter-spacing: .06em; text-transform: uppercase; background: rgba(255,255,255,.02); }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: rgba(56,189,248,.03); }
+
+  .method {
+    display: inline-block; min-width: 46px; text-align: center;
+    border-radius: 6px; padding: 1px 7px; font-family: var(--mono); font-size: .7rem; font-weight: 700;
+    border: 1px solid transparent;
+  }
+  .m-get { color: #8ce7b0; background: rgba(34,197,94,.1); border-color: rgba(34,197,94,.3); }
+  .m-post { color: #93d8ff; background: rgba(56,189,248,.1); border-color: rgba(56,189,248,.3); }
+  .m-both { color: #d8c6ff; background: rgba(139,92,246,.12); border-color: rgba(139,92,246,.32); }
+
+  /* code */
+  .code {
+    position: relative; background: #070b12; border: 1px solid var(--border);
+    border-radius: 11px; margin: 12px 0; overflow: hidden;
+  }
+  .code pre { margin: 0; padding: 14px 46px 14px 16px; overflow-x: auto; font-size: .8rem; line-height: 1.55; color: #b9c9dc; }
+  .copy {
+    position: absolute; top: 8px; right: 8px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--muted); border-radius: 7px;
+    font-size: .7rem; padding: 3px 8px; cursor: pointer; font-family: var(--sans);
+  }
+  .copy:hover { color: var(--text); border-color: rgba(56,189,248,.4); }
+  .copy.done { color: var(--green); border-color: rgba(34,197,94,.4); }
+
+  /* tools */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 18px 0 14px; }
+  .search {
+    flex: 1 1 260px; min-width: 220px;
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 10px; padding: 9px 13px; font-family: var(--sans); font-size: .88rem; outline: none;
+  }
+  .search:focus { border-color: rgba(56,189,248,.55); box-shadow: 0 0 0 3px rgba(56,189,248,.1); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    border: 1px solid var(--border); background: transparent; color: var(--muted);
+    border-radius: 999px; padding: 4px 11px; font-size: .76rem; cursor: pointer; font-family: var(--sans);
+  }
+  .chip.active { color: #061018; background: linear-gradient(135deg,#7dd3fc,#a78bfa); border-color: transparent; font-weight: 600; }
+  .count { color: var(--dim); font-size: .78rem; margin-left: auto; }
+
+  .tool {
+    border: 1px solid var(--border); border-radius: 11px; margin-bottom: 9px;
+    background: linear-gradient(180deg, rgba(21,30,46,.7), rgba(12,17,26,.85));
+    overflow: hidden;
+  }
+  .tool-head {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 12px 15px; background: transparent; border: 0; color: var(--text);
+    cursor: pointer; text-align: left; font-family: var(--sans); font-size: .88rem;
+  }
+  .tool-head:hover { background: rgba(56,189,248,.04); }
+  .tool-head .name { font-family: var(--mono); color: #9fdcff; font-size: .84rem; }
+  .tool-head .chev { margin-left: auto; color: var(--dim); transition: transform .18s ease; }
+  .tool.open .chev { transform: rotate(90deg); }
+  .cat {
+    flex: none; font-size: .68rem; color: #c9b4ff; background: rgba(139,92,246,.12);
+    border: 1px solid rgba(139,92,246,.28); border-radius: 999px; padding: 1px 8px;
+  }
+  .tool-body { display: none; padding: 0 15px 14px; border-top: 1px solid var(--border-soft); }
+  .tool.open .tool-body { display: block; }
+  .tool-body p { color: var(--muted); font-size: .84rem; margin: 12px 0; }
+  .params { width: 100%; border-collapse: collapse; font-size: .78rem; min-width: 0; }
+  .params th, .params td { padding: 6px 8px; }
+  .params code { font-size: .86em; }
+  .empty { color: var(--dim); text-align: center; padding: 26px 0; }
+
+  /* timeline */
+  .timeline { position: relative; padding-left: 22px; }
+  .timeline::before { content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 1px; background: var(--border); }
+  .tl-item { position: relative; padding: 0 0 22px 8px; }
+  .tl-item::before {
+    content: ""; position: absolute; left: -21px; top: 7px; width: 9px; height: 9px;
+    border-radius: 50%; background: var(--panel-2); border: 2px solid var(--dim);
+  }
+  .tl-item.done::before { background: var(--green); border-color: var(--green); box-shadow: 0 0 10px rgba(34,197,94,.45); }
+  .tl-item.next::before { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px rgba(56,189,248,.5); }
+  .tl-item h4 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .tl-item p { color: var(--muted); font-size: .86rem; margin: .35em 0 0; }
+  .badge { font-size: .68rem; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); font-weight: 500; }
+  .badge.done { color: #8ce7b0; border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.08); }
+  .badge.next { color: #93d8ff; border-color: rgba(56,189,248,.35); background: rgba(56,189,248,.08); }
+  .badge.later { color: #c9b4ff; border-color: rgba(139,92,246,.35); background: rgba(139,92,246,.08); }
+
+  .callout {
+    border-left: 3px solid var(--accent); background: rgba(56,189,248,.06);
+    border-radius: 0 10px 10px 0; padding: 12px 16px; color: var(--muted); font-size: .87rem;
+  }
+  .callout.warn { border-color: var(--amber); background: rgba(245,158,11,.06); }
+  .callout.green { border-color: var(--green); background: rgba(34,197,94,.06); }
+
+  .kv { display: grid; grid-template-columns: 150px 1fr; gap: 6px 16px; font-size: .85rem; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+
+  .progress { height: 8px; border-radius: 99px; background: var(--panel-2); overflow: hidden; border: 1px solid var(--border); }
+  .progress i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #22c55e, #38bdf8); }
+
+  footer { margin-top: 46px; padding-top: 18px; border-top: 1px solid var(--border-soft); color: var(--dim); font-size: .8rem; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; }
+
+  @media (max-width: 640px) {
+    body { font-size: 14px; }
+    .wrap { padding: 0 15px 50px; }
+    .hero { padding-top: 30px; }
+    .kv { grid-template-columns: 110px 1fr; }
+    .count { margin-left: 0; width: 100%; }
+  }
+  @media print {
+    .nav, .quick, .copy { display: none; }
+    section.tab { display: block !important; }
+    body { background: #fff; color: #111; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="hero-top">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#9fdcff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+          <path d="M3 9h18M7 6.5h.01M10 6.5h.01"></path>
+          <path d="M7 13l2 2-2 2M12 17h4"></path>
+        </svg>
+      </div>
+      <div>
+        <h1>ShardX Workspace <span style="color:var(--dim);font-weight:400;font-size:1rem">项目图鉴</span></h1>
+        <div style="color:var(--dim);font-size:.8rem;margin-top:3px">openchamber-shardx · 指纹浏览器 × OpenChamber 多会话工作台</div>
+      </div>
+    </div>
+
+    <p class="lede">
+      把 ShardX 指纹浏览器变成 OpenChamber 里的浏览器标签式工作台：每个会话独占一个指纹实例，
+      面板四页控制台、启动器主界面镜像、32 个 MCP 工具、19 条桥接路由，零第三方运行时依赖。
+    </p>
+
+    <div class="badges">
+      <span class="tag accent">版本 <b id="ver">1.4.0</b></span>
+      <span class="tag green">MCP <b id="toolCount">32</b> 工具</span>
+      <span class="tag">桥接路由 <b>19</b></span>
+      <span class="tag">面板页面 <b>4 + 实例</b></span>
+      <span class="tag violet">运行时依赖 <b>0</b></span>
+      <span class="tag">私有仓库</span>
+    </div>
+
+    <div class="quick">
+      <a class="btn primary" href="https://github.com/wbi35772/openchamber-shardx" target="_blank" rel="noreferrer">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.55v-2.1c-3.2.7-3.88-1.36-3.88-1.36-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.26 5.69.41.36.78 1.06.78 2.14v3.17c0 .3.21.66.8.55A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+        GitHub 私有仓库
+      </a>
+      <a class="btn" href="https://github.com/wbi35772/openchamber-shardx/blob/main/docs/MCP-TOOLS.md" target="_blank" rel="noreferrer">MCP 工具参考</a>
+      <a class="btn" href="https://github.com/wbi35772/openchamber-shardx/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noreferrer">架构文档</a>
+      <a class="btn" href="https://github.com/wbi35772/openchamber-shardx/blob/main/docs/OPERATIONS.md" target="_blank" rel="noreferrer">运维手册</a>
+    </div>
+  </header>
+
+  <nav class="nav" aria-label="章节">
+    <div class="nav-inner" id="nav"></div>
+  </nav>
+
+  <!-- ============ 总览 ============ -->
+  <section class="tab active" id="tab-overview">
+    <div class="grid g4">
+      <div class="card stat"><div class="num" id="s1">32</div><div class="label">MCP 工具</div><div class="sub">7 个能力域 · 真实 E2E</div></div>
+      <div class="card stat"><div class="num">19</div><div class="label">桥接路由</div><div class="sub">REST / CDP / 状态 / 启动器</div></div>
+      <div class="card stat"><div class="num">4+1</div><div class="label">面板页面</div><div class="sub">环境 / 映射 / Skill / 服务器 + 实例</div></div>
+      <div class="card stat"><div class="num">0</div><div class="label">运行时依赖</div><div class="sub">Node 内置 + 手写 WebSocket</div></div>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">capabilities</span>
+      <h2>它解决什么问题</h2>
+    </div>
+    <div class="grid g3">
+      <div class="card">
+        <h3>会话级隔离</h3>
+        <p><code>session_id ↔ profileId</code> 强绑定，profile 独占锁。两个会话不会抢同一个指纹实例，一个会话可以并行持有多个实例。</p>
+      </div>
+      <div class="card">
+        <h3>浏览器式工作台</h3>
+        <p>固定控制台标签 + 每个实例一条标签（<code>instance:&lt;profileId&gt;</code>）。关闭标签只移除 UI，不停止实例。</p>
+      </div>
+      <div class="card">
+        <h3>Agent 可接管</h3>
+        <p>面板与 MCP 共用 <code>state.json</code>。Agent 绑定的实例会直接出现在标签栏，反过来也一样。</p>
+      </div>
+      <div class="card">
+        <h3>启动器主界面镜像</h3>
+        <p>截图流 + 鼠标/滚轮/键盘/粘贴/IME 全量转发，<code>Emulation</code> 按容器像素重排，1:1 铺满。</p>
+      </div>
+      <div class="card">
+        <h3>运行中实例接管</h3>
+        <p>启动器窗口启动的实例补读 <code>DevToolsActivePort</code>；旧实例一键停止并带调试参数重启。</p>
+      </div>
+      <div class="card">
+        <h3>连接自愈</h3>
+        <p>每 20s 重新发现启动器，关闭时自动拉起（30s 冷却）；启动器路径自动解析并落盘。</p>
+      </div>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">metrics</span>
+      <h2>代码构成与能力分布</h2>
+      <p>数据来自当前仓库源码行数与 <code>manifest.json</code>。</p>
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>源码构成（行）</h3>
+        <div class="chart-box"><canvas id="chart-lines"></canvas></div>
+        <div class="legend-note">面板含 TypeScript / CSS / HTML；服务含手写 RFC6455。</div>
+      </div>
+      <div class="card">
+        <h3>MCP 工具按能力域</h3>
+        <div class="chart-box"><canvas id="chart-tools"></canvas></div>
+        <div class="legend-note">32 个工具覆盖环境、页面、档案、代理、指纹、Skill 与服务器。</div>
+      </div>
+    </div>
+
+    <div class="card flat" style="margin-top:16px">
+      <h3>模块依赖</h3>
+      <svg id="module-graph" role="img" aria-label="模块依赖图"></svg>
+      <div class="legend-note">拖动节点查看关系；颜色区分面板 / 服务 / MCP / 外部。</div>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">screens</span>
+      <h2>界面速览</h2>
+    </div>
+    <div class="grid g2">
+      <figure class="shot" style="margin:0"><img src="assets/panel-mirror.png" alt="启动器主界面镜像" loading="lazy"><span>环境 · 主界面镜像</span></figure>
+      <figure class="shot" style="margin:0"><img src="assets/panel-cards.png" alt="卡片视图" loading="lazy"><span>环境 · 卡片视图</span></figure>
+      <figure class="shot" style="margin:0"><img src="assets/panel-list.png" alt="本地列表" loading="lazy"><span>环境 · 本地列表 + 文件夹标签</span></figure>
+      <figure class="shot" style="margin:0"><img src="assets/panel-instance.png" alt="实例视图" loading="lazy"><span>实例 · 实时视口</span></figure>
+    </div>
+  </section>
+
+  <!-- ============ 架构 ============ -->
+  <section class="tab" id="tab-arch">
+    <div class="section-head">
+      <span class="kicker">architecture</span>
+      <h2>三层职责</h2>
+      <p>面板只渲染，服务管网络，MCP 独立驱动；三者共享状态文件。</p>
+    </div>
+
+    <pre class="mermaid">
+flowchart LR
+  subgraph OC["OpenChamber"]
+    UI["面板 iframe<br/>panel/main.js"]
+    HOST["宿主 host.serviceRequest"]
+    AGENT["Agent / MCP 客户端"]
+  end
+  subgraph EXT["shardx-workspace"]
+    SVC["回环桥接服务<br/>service/main.js"]
+    IDX["MCP stdio<br/>index.js"]
+    STATE[("state.json")]
+  end
+  subgraph SX["ShardX 2.1.x"]
+    API["启动器 REST<br/>:40325"]
+    WEB["WebView2 主界面<br/>CDP :40326"]
+    INST["指纹实例<br/>CDP 动态端口"]
+  end
+  UI --> HOST --> SVC
+  SVC -->|Bearer 自动签发| API
+  SVC -->|WebSocket| INST
+  SVC -->|截图 / Input| WEB
+  AGENT --> IDX
+  IDX --> API
+  IDX --> INST
+  UI <--> STATE
+  IDX <--> STATE
+    </pre>
+
+    <div class="grid g3" style="margin-top:16px">
+      <div class="card">
+        <h3>面板</h3>
+        <p>标签、四页 UI、镜像渲染、输入映射。不能直接访问 <code>127.0.0.1</code>（guest CSP），全部走 <code>host.serviceRequest</code>。</p>
+      </div>
+      <div class="card">
+        <h3>桥接服务</h3>
+        <p>宿主分配端口与 Bearer；自动发现启动器、签发 HS256 JWT、代理 REST、维持 CDP、读写状态、控制启动器。</p>
+      </div>
+      <div class="card">
+        <h3>MCP 服务端</h3>
+        <p>独立 stdio 进程，直接驱动 REST + CDP。工具名 <code>shardx-workspace_*</code>，与面板共享映射与 Skill。</p>
+      </div>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">flow</span>
+      <h2>绑定并启动实例</h2>
+    </div>
+    <pre class="mermaid">
+sequenceDiagram
+  participant U as 用户 / Agent
+  participant P as 面板 / MCP
+  participant S as 桥接服务
+  participant L as ShardX REST
+  participant B as 指纹实例
+  U->>P: bind(profileId)
+  P->>S: /shardx/discover
+  S-->>P: {port, token}
+  P->>S: /proxy startProfile
+  S->>L: POST /profiles/{id}/start
+  L-->>S: web_socket_debugger_url
+  P->>S: /cdp/open
+  S->>B: WebSocket 握手
+  P->>S: Target.getTargets / attachToTarget
+  S-->>P: 页面 target + sessionId
+    </pre>
+
+    <div class="section-head">
+      <span class="kicker">flow</span>
+      <h2>镜像与接管</h2>
+    </div>
+    <div class="grid g2">
+      <pre class="mermaid">
+sequenceDiagram
+  participant M as LauncherMirror
+  participant S as 桥接服务
+  participant W as WebView2
+  loop 每 900ms
+    M->>S: Page.captureScreenshot
+    S-->>M: JPEG base64
+  end
+  M->>S: Input.dispatchMouseEvent
+  M->>S: Emulation.setDeviceMetricsOverride
+  S->>W: 页面随容器重排
+      </pre>
+      <pre class="mermaid">
+sequenceDiagram
+  participant P as 面板
+  participant S as 桥接服务
+  participant L as 启动器 API
+  participant F as DevToolsActivePort
+  P->>S: POST /instances/running
+  S->>L: GET /running
+  S->>F: 补读实际端口
+  S-->>P: enriched / attachable
+  P->>S: attachRunningProfile
+      </pre>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">routes</span>
+      <h2>桥接服务路由（19）</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>方法</th><th>路由</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><span class="method m-get">GET</span></td><td><code>/health</code></td><td>宿主就绪探测</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/shardx/discover</code></td><td>读启动器 settings，返回端口 + 现场签发 Bearer</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/instances/running</code></td><td>运行实例列表，补读 <code>DevToolsActivePort</code></td></tr>
+          <tr><td><span class="method m-both">GET/POST</span></td><td><code>/launcher/settings</code></td><td>读取/合并启动器设置（调试参数注入）</td></tr>
+          <tr><td><span class="method m-get">GET</span></td><td><code>/launcher/status</code></td><td>探测镜像 CDP 端口与页面 target</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/proxy</code></td><td>代理 ShardX REST（仅回环，15s / 7MB）</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/cdp/open</code></td><td>建立 CDP WebSocket</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/cdp/send</code></td><td>写入一帧 CDP 命令</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/cdp/events</code></td><td>长轮询响应与事件（≤5s）</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/cdp/close</code></td><td>关闭 CDP 连接</td></tr>
+          <tr><td><span class="method m-both">GET/POST</span></td><td><code>/workspace/state</code></td><td>读/写共享状态</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/workspace/mapping</code></td><td>写入或删除会话映射</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/workspace/skill</code></td><td>创建/更新 Skill</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/workspace/skill/remove</code></td><td>删除 Skill</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/workspace/assign</code></td><td>分配/取消分配 Skill</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/workspace/settings</code></td><td>更新设置（启动器路径等）</td></tr>
+          <tr><td><span class="method m-get">GET</span></td><td><code>/workspace/server/status</code></td><td>启动器状态、进程、镜像端口</td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/workspace/server/control</code></td><td>start / stop / restart 并等待 <code>/health</code></td></tr>
+          <tr><td><span class="method m-post">POST</span></td><td><code>/workspace/server/sync</code></td><td>同步分组、环境、代理、运行实例</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">invariants</span>
+      <h2>必须保持的不变量</h2>
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>独占与生命周期</h3>
+        <p>① 一个 profile 同时只能被一个会话锁定。② 关闭标签不等于停止实例，只有「停止并释放」才 stop + 解锁。③ 同一 profile 复用一条 CDP，不要重复 connect。</p>
+      </div>
+      <div class="card">
+        <h3>网络与路径</h3>
+        <p>④ 面板不直连网络，新能力必须走 service 路由。⑤ 启动器路径不做假设：state → 运行进程 → 常见目录，结果落盘。<br>⑥ 镜像输入必须做坐标反算，否则会点偏。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 面板 ============ -->
+  <section class="tab" id="tab-panel">
+    <div class="section-head">
+      <span class="kicker">workspace</span>
+      <h2>四页控制台 + 实例标签</h2>
+      <p>暗色极客主题，固定「环境」标签 + 动态实例标签。</p>
+    </div>
+
+    <div class="grid g2">
+      <div class="card">
+        <h3>环境</h3>
+        <p>默认 ShardX 主界面镜像（截图 + 输入转发）；可切本地列表。本地列表有卡片 / 列表 / 标签组三种视图，列表内自带文件夹标签。</p>
+        <figure class="shot" style="margin:12px 0 0"><img src="assets/panel-groups.png" alt="标签组视图" loading="lazy"><span>标签组视图</span></figure>
+      </div>
+      <div class="card">
+        <h3>实例</h3>
+        <p>地址栏、前进/后退/刷新、实时视口、<code>Target.getTargets</code> 子标签、点击/键盘转发、检查器（会话/指纹/页面）与 CDP 日志。</p>
+        <figure class="shot" style="margin:12px 0 0"><img src="assets/panel-instance.png" alt="实例视图" loading="lazy"><span>实例视图</span></figure>
+      </div>
+      <div class="card">
+        <h3>映射</h3>
+        <p>查看/编辑 <code>session → profile</code> 映射；与 Agent 的 MCP 调用共享同一份状态，刷新即可看到新绑定。</p>
+        <figure class="shot" style="margin:12px 0 0"><img src="assets/panel-mapping.png" alt="会话映射" loading="lazy"><span>会话映射</span></figure>
+      </div>
+      <div class="card">
+        <h3>Skill</h3>
+        <p>按网站沉淀操作步骤（navigate / click / type / wait / evaluate / extract），分配给实例或整个文件夹，支持逐步执行与失败中断。</p>
+        <figure class="shot" style="margin:12px 0 0"><img src="assets/panel-skills.png" alt="Skill 页面" loading="lazy"><span>Skill 页面</span></figure>
+      </div>
+      <div class="card">
+        <h3>服务器</h3>
+        <p>启动/停止/重启启动器、探测端口与版本、同步分组/环境/代理/运行实例；自动注入 WebView2 调试参数。</p>
+        <figure class="shot" style="margin:12px 0 0"><img src="assets/panel-server.png" alt="服务器页面" loading="lazy"><span>服务器页面</span></figure>
+      </div>
+      <div class="card">
+        <h3>本地列表细节</h3>
+        <p>标签：全部环境 + 各文件夹（环境数 / 运行数）。全部环境显示文件夹列且不拖拽；切到具体文件夹后按手动顺序启用行拖拽。表头支持单击/双击排序，9 种字段与升降序写入 <code>localStorage</code>。</p>
+        <figure class="shot" style="margin:12px 0 0"><img src="assets/panel-list.png" alt="本地列表" loading="lazy"><span>本地列表 + 文件夹标签</span></figure>
+      </div>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">interactions</span>
+      <h2>交互清单</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>区域</th><th>操作</th><th>结果</th></tr></thead>
+        <tbody>
+          <tr><td>标签栏</td><td>点 <code>+</code> / 选环境「启动实例」</td><td>启动并绑定，开 <code>instance:&lt;id&gt;</code> 标签</td></tr>
+          <tr><td>标签栏</td><td>关闭实例标签</td><td>只移除 UI，实例继续运行；自动标签记入 dismissed</td></tr>
+          <tr><td>环境 · 镜像</td><td>点「重启并启用镜像」</td><td>注入 WebView2 调试参数并重启启动器</td></tr>
+          <tr><td>环境 · 镜像</td><td>点「接管 N 个运行实例」</td><td>停止无端口实例并通过 API 重启，后台开标签</td></tr>
+          <tr><td>列表</td><td>单击 / 双击表头</td><td>切换排序方向 / 循环排序字段</td></tr>
+          <tr><td>列表</td><td>文件夹标签</td><td>只切换内容区；选中项持久化</td></tr>
+          <tr><td>列表</td><td>拖拽行（手动排序 + 具体文件夹）</td><td>写入 <code>shardx-profile-order</code></td></tr>
+          <tr><td>实例</td><td>地址栏 / 刷新 / 前进后退</td><td>CDP 导航并等待加载</td></tr>
+          <tr><td>实例</td><td>点视口 / 键盘输入</td><td>按 aspect-fit 反算后转发 <code>Input.*</code></td></tr>
+          <tr><td>映射</td><td>解除 / 改绑</td><td>释放或更新共享映射</td></tr>
+          <tr><td>Skill</td><td>分配 / 执行</td><td>按文件夹或 profile 生效，逐步返回结果</td></tr>
+          <tr><td>服务器</td><td>启动 / 停止 / 重启</td><td>等待 <code>/health</code> 就绪后返回版本与端口</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout" style="margin-top:16px">
+      小屏适配：800×900 下卡片、列表、分组与实例页都保持可操作；镜像会按内容区像素重排，不出现横向滚动。
+    </div>
+  </section>
+
+  <!-- ============ MCP ============ -->
+  <section class="tab" id="tab-mcp">
+    <div class="section-head">
+      <span class="kicker">mcp</span>
+      <h2>32 个 MCP 工具</h2>
+      <p>零依赖 stdio 服务端；工具名在 OpenChamber 中显示为 <code>shardx-workspace_&lt;tool&gt;</code>。</p>
+    </div>
+
+    <div class="toolbar">
+      <input class="search" id="tool-search" type="search" placeholder="搜索工具名、描述或参数…" autocomplete="off" />
+      <div class="chips" id="tool-chips"></div>
+      <span class="count" id="tool-count"></span>
+    </div>
+    <div id="tool-list"></div>
+
+    <div class="section-head">
+      <span class="kicker">examples</span>
+      <h2>最小调用示例</h2>
+    </div>
+    <div class="code"><button class="copy">复制</button><pre>shardx-workspace_list_and_bind_profile  { session_id: "demo", action: "auto-bind" }
+shardx-workspace_session_navigate       { session_id: "demo", url: "https://example.com" }
+shardx-workspace_session_snapshot       { session_id: "demo" }
+shardx-workspace_session_stop_and_release { session_id: "demo" }</pre></div>
+
+    <div class="callout warn" style="margin-top:14px">
+      <b>注册方式：</b>扩展的 <code>contributes.tools</code> 只负责聊天展示，不会注册工具。
+      必须把 <code>index.js</code> 写进 OpenCode 的 <code>mcp.servers</code>，并重启 Agent 会话。
+      完整参数见 <a href="https://github.com/wbi35772/openchamber-shardx/blob/main/docs/MCP-TOOLS.md" target="_blank" rel="noreferrer">docs/MCP-TOOLS.md</a>。
+    </div>
+  </section>
+
+  <!-- ============ 服务 ============ -->
+  <section class="tab" id="tab-service">
+    <div class="section-head">
+      <span class="kicker">service</span>
+      <h2>共享状态模型</h2>
+      <p><code>%APPDATA%\shardx-workspace\state.json</code>，面板 / 服务 / MCP 三方读写；原子替换写入。</p>
+    </div>
+    <div class="code"><button class="copy">复制</button><pre>{
+  "version": 1,
+  "mappings": [
+    {
+      "profile_id": "uuid",
+      "profile_name": "环境名",
+      "session_id": "openchamber-session",
+      "source": "panel | mcp",
+      "updated_at": 1760000000000
+    }
+  ],
+  "skills": [
+    {
+      "id": "skill-uuid",
+      "name": "登录流程",
+      "site": "example.com",
+      "url_pattern": "https://example.com/*",
+      "description": "",
+      "steps": [{ "action": "navigate", "url": "https://example.com/login" }],
+      "created_at": 0,
+      "updated_at": 0
+    }
+  ],
+  "assignments": [
+    { "skill_id": "skill-uuid", "target_type": "profile", "target_id": "uuid", "created_at": 0 }
+  ],
+  "settings": { "launcher_path": "D:\\Tools\\shardx\\ShardBrowser-Launcher.exe" }
+}</pre></div>
+
+    <div class="section-head">
+      <span class="kicker">discovery</span>
+      <h2>自动发现与鉴权</h2>
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>不用手填端口和 Token</h3>
+        <p>服务读取 <code>%APPDATA%\shardx-launcher\settings.json</code> 的 <code>api_port</code> / <code>api_secret</code>，
+        用 secret 现场签 HS256 JWT（<code>sub=shardx-api</code>）作为 Bearer。手动 Token 优先。</p>
+      </div>
+      <div class="card">
+        <h3>为什么需要回环桥接</h3>
+        <p>面板 iframe 的 CSP 禁止直连 <code>127.0.0.1</code>，清单的 <code>origins</code> 只接受 https。
+        宿主通过 <code>host.serviceRequest</code> 注入端口与 Bearer，服务再访问 ShardX。</p>
+      </div>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">local storage</span>
+      <h2>面板本地状态</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>键</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><code>shardx-home-mode</code></td><td><code>mirror</code> / <code>local</code>，环境页默认模式</td></tr>
+          <tr><td><code>shardx-sort</code></td><td><code>{key, dir}</code> 排序字段与方向</td></tr>
+          <tr><td><code>shardx-list-folder</code></td><td>当前文件夹标签，<code>__all__</code> 为全部</td></tr>
+          <tr><td><code>shardx-view</code></td><td><code>cards</code> / <code>list</code> / <code>groups</code></td></tr>
+          <tr><td><code>shardx-profile-order</code></td><td>每个文件夹内的手动拖拽顺序</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 部署 ============ -->
+  <section class="tab" id="tab-ops">
+    <div class="section-head">
+      <span class="kicker">operations</span>
+      <h2>从源码到可用</h2>
+      <p>前置：OpenChamber ≥ 2.5、ShardX Launcher 2.1.x、Bun、Node ≥ 22、Windows（镜像）。</p>
+    </div>
+
+    <div class="grid g2">
+      <div class="card">
+        <h3>1 · 构建与校验</h3>
+        <div class="code"><button class="copy">复制</button><pre>bun install
+bun run typecheck
+bun run validate
+bun run build</pre></div>
+      </div>
+      <div class="card">
+        <h3>2 · 部署扩展</h3>
+        <div class="code"><button class="copy">复制</button><pre>$dst = "$env:USERPROFILE\.config\openchamber\extensions\shardx-workspace"
+New-Item -ItemType Directory -Force $dst | Out-Null
+Copy-Item index.js, manifest.json, icon.svg, package.json -Destination $dst -Force
+Copy-Item panel, service -Destination $dst -Recurse -Force</pre></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h3>3 · 注册 MCP</h3>
+      <div class="code"><button class="copy">复制</button><pre>{
+  "mcp": {
+    "servers": {
+      "shardx-workspace": {
+        "type": "local",
+        "enabled": true,
+        "command": [
+          "C:\\Users\\&lt;你&gt;\\.local\\tools\\node\\node.exe",
+          "C:\\Users\\&lt;你&gt;\\.config\\openchamber\\extensions\\shardx-workspace\\index.js"
+        ]
+      }
+    }
+  }
+}</pre></div>
+      <p class="legend-note">写入 <code>~/.config/opencode/opencode.json</code> 后重启 Agent 会话。</p>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">env</span>
+      <h2>环境变量</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>变量</th><th>使用方</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><code>OPENCHAMBER_SERVICE_PORT</code></td><td>宿主 → service</td><td>回环服务监听端口</td></tr>
+          <tr><td><code>OPENCHAMBER_SERVICE_TOKEN</code></td><td>宿主 → service</td><td>所有路由的 Bearer 校验</td></tr>
+          <tr><td><code>SHARDX_WORKSPACE_STATE</code></td><td>service / MCP</td><td>覆盖共享状态文件路径</td></tr>
+          <tr><td><code>SHARDX_LAUNCHER_SETTINGS</code></td><td>service / MCP</td><td>覆盖启动器 settings.json</td></tr>
+          <tr><td><code>SHARDX_LAUNCHER_PATH</code></td><td>service</td><td>启动器路径提示（最高优先级）</td></tr>
+          <tr><td><code>SHARDX_MIRROR_PORT</code></td><td>service</td><td>镜像 CDP 端口提示</td></tr>
+          <tr><td><code>WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS</code></td><td>启动器</td><td>注入远程调试端口与 origins</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">troubleshooting</span>
+      <h2>故障排查</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+        <tbody>
+          <tr><td>面板全部请求 401</td><td>宿主 token 未注入 / 手动裸跑 service</td><td>重新加载扩展，不要手动启动 service</td></tr>
+          <tr><td>discover 返回 found:false</td><td>启动器未安装或 settings 不存在</td><td>设置 <code>SHARDX_LAUNCHER_SETTINGS</code></td></tr>
+          <tr><td>启动器关闭后不恢复</td><td>路径解析失败</td><td>服务器页填一次路径，成功后自动落盘</td></tr>
+          <tr><td>镜像空白</td><td>启动器未带调试端口</td><td>点「重启并启用镜像」；检查 40326</td></tr>
+          <tr><td>镜像点击偏移</td><td>容器与视口尺寸不一致</td><td>确认 ResizeObserver 生效后重试</td></tr>
+          <tr><td>实例没有 CDP 端口</td><td>启动器窗口启动，缺 extra_args</td><td>「接管 N 个运行实例」或重启启动器</td></tr>
+          <tr><td>MCP 工具不出现</td><td>OpenCode 配置未生效</td><td>重启会话，检查 Node ≥ 22 与路径</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 路线图 ============ -->
+  <section class="tab" id="tab-road">
+    <div class="section-head">
+      <span class="kicker">roadmap</span>
+      <h2>版本与迭代</h2>
+      <p>当前 1.4.0；下一阶段聚焦冲突可视化、Skill 录制与可观测性。</p>
+    </div>
+
+    <div class="card" style="margin-bottom:18px">
+      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between">
+        <div><b>v1.4.0 交付度</b> <span class="legend-note">功能 7 / 7 · 文档 3 / 3 · 验证通过</span></div>
+        <div style="flex:1 1 240px"><div class="progress"><i style="width:100%"></i></div></div>
+      </div>
+    </div>
+
+    <div class="timeline">
+      <div class="tl-item done">
+        <h4>v1.2.0 · 多会话工作台 <span class="badge done">已完成</span></h4>
+        <p>四页控制台、浏览器式实例标签、共享状态、15 个 MCP 工具、启动器自动发现。</p>
+      </div>
+      <div class="tl-item done">
+        <h4>v1.3.0 · MCP 全覆盖 <span class="badge done">已完成</span></h4>
+        <p>32 个工具；真实 E2E：绑定 → 导航 → 快照 → 标签 → 截图 → 释放。</p>
+      </div>
+      <div class="tl-item done">
+        <h4>v1.4.0 · 镜像与文档 <span class="badge done">已完成</span></h4>
+        <p>主界面镜像铺满、运行实例接管、连接自愈、列表文件夹标签、自动生成文档、Canvas 图鉴。</p>
+      </div>
+      <div class="tl-item next">
+        <h4>v1.5.x · 冲突可视化 / Skill 录制 / 网络面板 <span class="badge next">下一步</span></h4>
+        <p>跨会话独占方可见并可释放；录制操作生成 Skill；Cookie 编辑器与 HAR 导出。</p>
+      </div>
+      <div class="tl-item">
+        <h4>v1.6.x · 多节点与可观测性 <span class="badge later">中期</span></h4>
+        <p>多启动器 / 远程节点、CDP 延迟与重连仪表盘、Bun test + GitHub Actions。</p>
+      </div>
+      <div class="tl-item">
+        <h4>长期 · 体验与生态 <span class="badge later">长期</span></h4>
+        <p>标签拖拽分组、代理延迟探测、批量启停、面板内更新器、英文界面。</p>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:20px">
+      <div class="card">
+        <h3>验收标准示例</h3>
+        <p><b>冲突可视化：</b>两个会话抢同一 profile，第二个会话能看到持有方并一键释放。<br>
+        <b>Skill 录制：</b>录制一次登录流程，保存后在其他 profile 回放成功。<br>
+        <b>多节点：</b>两个节点各绑定一个实例，标签栏显示节点徽标，互不串线。</p>
+      </div>
+      <div class="card">
+        <h3>明确不做</h3>
+        <p>不绕过 ShardX 授权或计费；不在面板执行任意系统命令；不把启动器 API 暴露到非回环地址。</p>
+      </div>
+    </div>
+
+    <div class="section-head">
+      <span class="kicker">docs</span>
+      <h2>文档索引</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>文档</th><th>内容</th></tr></thead>
+        <tbody>
+          <tr><td><a href="https://github.com/wbi35772/openchamber-shardx/blob/main/README.md" target="_blank" rel="noreferrer">README.md</a></td><td>功能地图、安装、MCP 注册、架构、关键设计</td></tr>
+          <tr><td><a href="https://github.com/wbi35772/openchamber-shardx/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noreferrer">docs/ARCHITECTURE.md</a></td><td>模块边界、调用链、状态模型、不变量</td></tr>
+          <tr><td><a href="https://github.com/wbi35772/openchamber-shardx/blob/main/docs/MCP-TOOLS.md" target="_blank" rel="noreferrer">docs/MCP-TOOLS.md</a></td><td>32 个工具的完整参数参考（自动生成）</td></tr>
+          <tr><td><a href="https://github.com/wbi35772/openchamber-shardx/blob/main/docs/OPERATIONS.md" target="_blank" rel="noreferrer">docs/OPERATIONS.md</a></td><td>构建、部署、升级、排障、回滚</td></tr>
+          <tr><td><a href="https://github.com/wbi35772/openchamber-shardx/blob/main/docs/ROADMAP.md" target="_blank" rel="noreferrer">docs/ROADMAP.md</a></td><td>版本历史与后续迭代</td></tr>
+          <tr><td><a href="https://github.com/wbi35772/openchamber-shardx/blob/main/CHANGELOG.md" target="_blank" rel="noreferrer">CHANGELOG.md</a></td><td>逐版本变更记录</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <span>ShardX Workspace · openchamber-shardx</span>
+    <span>生成于 2026-11-15 · 与仓库 v1.4.0 同步</span>
+  </footer>
+</div>
+
+<div class="lightbox" id="lightbox"><img alt="预览大图" /></div>
+
+<script src="tool-data.js"></script>
+<script>
+(() => {
+  const TOOLS = Array.isArray(window.__SHARDX_TOOLS__) ? window.__SHARDX_TOOLS__ : [];
+  const META = window.__SHARDX_META__ || { version: '1.4.0' };
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  $('#ver').textContent = META.version;
+  $('#toolCount').textContent = String(TOOLS.length);
+  $('#s1').textContent = String(TOOLS.length);
+
+  /* ---------- tabs ---------- */
+  const TABS = [
+    ['overview', '总览'],
+    ['arch', '架构'],
+    ['panel', '面板'],
+    ['mcp', 'MCP 工具'],
+    ['service', '服务与状态'],
+    ['ops', '部署运维'],
+    ['road', '路线图'],
+  ];
+  const nav = $('#nav');
+  for (const [key, label] of TABS) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.dataset.tab = key;
+    b.addEventListener('click', () => show(key, true));
+    nav.appendChild(b);
+  }
+  function show(key, push) {
+    if (!TABS.some(([k]) => k === key)) key = 'overview';
+    $$('.tab').forEach((el) => el.classList.toggle('active', el.id === 'tab-' + key));
+    $$('#nav button').forEach((el) => el.classList.toggle('active', el.dataset.tab === key));
+    try { localStorage.setItem('shardx-atlas-tab', key); } catch {}
+    if (push) {
+      history.replaceState(null, '', '#' + key);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    if (key === 'overview') drawCharts();
+  }
+  const initial = (location.hash || '').replace('#', '') || (() => { try { return localStorage.getItem('shardx-atlas-tab'); } catch { return ''; } })() || 'overview';
+  show(initial, false);
+
+  /* ---------- copy ---------- */
+  $$('.copy').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const text = btn.parentElement.querySelector('pre')?.innerText ?? '';
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        document.execCommand('copy'); ta.remove();
+      }
+      btn.textContent = '已复制';
+      btn.classList.add('done');
+      setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('done'); }, 1400);
+    });
+  });
+
+  /* ---------- lightbox ---------- */
+  const lb = $('#lightbox');
+  const lbImg = lb.querySelector('img');
+  $$('.shot').forEach((shot) => {
+    shot.addEventListener('click', () => {
+      const img = shot.querySelector('img');
+      if (!img) return;
+      lbImg.src = img.src;
+      lb.classList.add('open');
+    });
+  });
+  lb.addEventListener('click', () => lb.classList.remove('open'));
+
+  /* ---------- charts ---------- */
+  let chartsDrawn = false;
+  function drawCharts() {
+    if (chartsDrawn || !window.Chart) return;
+    chartsDrawn = true;
+    Chart.defaults.color = '#8494a8';
+    Chart.defaults.borderColor = 'rgba(31,43,61,.7)';
+    Chart.defaults.font.family = '"Segoe UI", "PingFang SC", sans-serif';
+
+    const lines = $('#chart-lines');
+    if (lines) {
+      new Chart(lines, {
+        type: 'doughnut',
+        data: {
+          labels: ['面板', '桥接服务', 'MCP 服务端'],
+          datasets: [{
+            data: [7893, 1701, 1882],
+            backgroundColor: ['rgba(56,189,248,.75)', 'rgba(139,92,246,.75)', 'rgba(34,197,94,.7)'],
+            borderColor: '#0c111a',
+            borderWidth: 3,
+            hoverOffset: 8,
+          }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, cutout: '62%',
+          plugins: {
+            legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true, padding: 14 } },
+            tooltip: { callbacks: { label: (c) => ` ${c.label}: ${c.parsed.toLocaleString()} 行` } },
+          },
+        },
+      });
+    }
+
+    const byCat = {};
+    for (const t of TOOLS) byCat[t.category] = (byCat[t.category] || 0) + 1;
+    const labels = Object.keys(byCat);
+    const tools = $('#chart-tools');
+    if (tools) {
+      new Chart(tools, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: '工具数',
+            data: labels.map((k) => byCat[k]),
+            backgroundColor: 'rgba(56,189,248,.55)',
+            hoverBackgroundColor: 'rgba(139,92,246,.8)',
+            borderRadius: 6,
+            borderSkipped: false,
+          }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          scales: {
+            x: { grid: { display: false }, ticks: { maxRotation: 35, minRotation: 0, font: { size: 10 } } },
+            y: { beginAtZero: true, ticks: { precision: 0, stepSize: 2 } },
+          },
+          plugins: { legend: { display: false } },
+        },
+      });
+    }
+  }
+
+  /* ---------- d3 module graph ---------- */
+  function drawGraph() {
+    if (!window.d3) return;
+    const svg = d3.select('#module-graph');
+    const W = svg.node().clientWidth || 900;
+    const H = 330;
+    svg.attr('viewBox', `0 0 ${W} ${H}`);
+
+    const nodes = [
+      { id: 'ui', label: 'panel/ui', group: 'panel', r: 22 },
+      { id: 'bridge', label: 'panel/bridge', group: 'panel', r: 16 },
+      { id: 'cdp', label: 'panel/cdp', group: 'panel', r: 15 },
+      { id: 'mirror', label: 'panel/mirror', group: 'panel', r: 15 },
+      { id: 'router', label: 'panel/router', group: 'panel', r: 14 },
+      { id: 'service', label: 'service/main', group: 'service', r: 22 },
+      { id: 'ws', label: 'service/ws', group: 'service', r: 12 },
+      { id: 'mcp', label: 'index.js (MCP)', group: 'mcp', r: 20 },
+      { id: 'state', label: 'state.json', group: 'state', r: 15 },
+      { id: 'rest', label: 'ShardX REST', group: 'external', r: 16 },
+      { id: 'cdpExt', label: 'CDP 实例', group: 'external', r: 16 },
+    ];
+    const links = [
+      ['ui', 'bridge'], ['ui', 'cdp'], ['ui', 'mirror'], ['ui', 'router'], ['ui', 'state'],
+      ['bridge', 'cdp'], ['bridge', 'router'], ['cdp', 'service'], ['mirror', 'service'],
+      ['service', 'ws'], ['service', 'rest'], ['ws', 'cdpExt'], ['service', 'state'],
+      ['mcp', 'rest'], ['mcp', 'cdpExt'], ['mcp', 'state'],
+    ].map(([source, target]) => ({ source, target }));
+
+    const palette = {
+      panel: '#38bdf8', service: '#8b5cf6', mcp: '#22c55e',
+      state: '#f59e0b', external: '#64748b',
+    };
+    const defs = svg.append('defs');
+    defs.append('marker')
+      .attr('id', 'arrow').attr('viewBox', '0 0 10 10')
+      .attr('refX', 9).attr('refY', 5).attr('markerWidth', 5).attr('markerHeight', 5)
+      .attr('orient', 'auto-start-reverse')
+      .append('path').attr('d', 'M 0 0 L 10 5 L 0 10 z').attr('fill', 'rgba(132,148,168,.55)');
+
+    const link = svg.append('g').selectAll('line').data(links).join('line')
+      .attr('stroke', 'rgba(132,148,168,.28)').attr('stroke-width', 1.2)
+      .attr('marker-end', 'url(#arrow)');
+
+    const node = svg.append('g').selectAll('g').data(nodes).join('g').attr('class', 'node').style('cursor', 'grab');
+    node.append('circle')
+      .attr('r', (d) => d.r)
+      .attr('fill', (d) => palette[d.group] + '33')
+      .attr('stroke', (d) => palette[d.group]);
+    node.append('text')
+      .text((d) => d.label)
+      .attr('class', 'node-label')
+      .attr('text-anchor', 'middle')
+      .attr('dy', (d) => d.r + 15);
+
+    const sim = d3.forceSimulation(nodes)
+      .force('link', d3.forceLink(links).id((d) => d.id).distance((l) => 92).strength(.6))
+      .force('charge', d3.forceManyBody().strength(-420))
+      .force('center', d3.forceCenter(W / 2, H / 2 - 6))
+      .force('collide', d3.forceCollide().radius((d) => d.r + 20));
+
+    sim.on('tick', () => {
+      nodes.forEach((d) => {
+        d.x = Math.max(d.r + 8, Math.min(W - d.r - 8, d.x));
+        d.y = Math.max(d.r + 8, Math.min(H - d.r - 24, d.y));
+      });
+      link.attr('x1', (d) => d.source.x).attr('y1', (d) => d.source.y)
+        .attr('x2', (d) => d.target.x).attr('y2', (d) => d.target.y);
+      node.attr('transform', (d) => `translate(${d.x},${d.y})`);
+    });
+
+    node.call(d3.drag()
+      .on('start', (event, d) => { if (!event.active) sim.alphaTarget(.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+      .on('end', (event, d) => { if (!event.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+    node.on('mouseenter', (event, d) => {
+      const near = new Set([d.id]);
+      links.forEach((l) => {
+        const s = l.source.id || l.source, t = l.target.id || l.target;
+        if (s === d.id) near.add(t);
+        if (t === d.id) near.add(s);
+      });
+      node.style('opacity', (n) => (near.has(n.id) ? 1 : .25));
+      link.style('stroke', (l) => {
+        const s = l.source.id || l.source, t = l.target.id || l.target;
+        return near.has(s) && near.has(t) ? 'rgba(56,189,248,.7)' : 'rgba(132,148,168,.12)';
+      });
+    }).on('mouseleave', () => {
+      node.style('opacity', 1);
+      link.style('stroke', 'rgba(132,148,168,.28)');
+    });
+  }
+
+  /* ---------- tool browser ---------- */
+  const list = $('#tool-list');
+  const chips = $('#tool-chips');
+  const search = $('#tool-search');
+  const count = $('#tool-count');
+  let activeCat = '全部';
+
+  const cats = ['全部', ...Array.from(new Set(TOOLS.map((t) => t.category)))];
+  for (const cat of cats) {
+    const b = document.createElement('button');
+    b.className = 'chip' + (cat === '全部' ? ' active' : '');
+    b.textContent = cat;
+    b.addEventListener('click', () => {
+      activeCat = cat;
+      $$('.chip', chips).forEach((x) => x.classList.toggle('active', x === b));
+      renderTools();
+    });
+    chips.appendChild(b);
+  }
+
+  function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  }
+
+  function renderTools() {
+    const q = search.value.trim().toLowerCase();
+    const rows = TOOLS.filter((t) => {
+      if (activeCat !== '全部' && t.category !== activeCat) return false;
+      if (!q) return true;
+      const hay = [t.name, t.description, t.category, ...(t.params || []).map((p) => p.name + ' ' + p.description)].join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+    count.textContent = `显示 ${rows.length} / ${TOOLS.length} 个工具`;
+    if (!rows.length) {
+      list.innerHTML = '<div class="empty">没有匹配的工具，换个关键词或分类。</div>';
+      return;
+    }
+    list.innerHTML = rows.map((t, i) => {
+      const params = (t.params || []).map((p) => `<tr>
+        <td><code>${esc(p.name)}</code></td>
+        <td>${esc(p.type) || '—'}</td>
+        <td>${p.required ? '<span style="color:#8ce7b0">必填</span>' : ''}</td>
+        <td>${p.default ? `<code>${esc(p.default)}</code>` : ''}</td>
+        <td>${esc(p.description)}</td>
+      </tr>`).join('');
+      return `<div class="tool" data-i="${i}">
+        <button class="tool-head" type="button">
+          <span class="cat">${esc(t.category)}</span>
+          <span class="name">${esc(t.name)}</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="tool-body">
+          <p>${esc(t.description)}</p>
+          ${params ? `<table class="params"><thead><tr><th>参数</th><th>类型</th><th>必填</th><th>默认</th><th>说明</th></tr></thead><tbody>${params}</tbody></table>` : '<p style="color:var(--dim)">无参数。</p>'}
+        </div>
+      </div>`;
+    }).join('');
+    $$('.tool-head', list).forEach((head) => {
+      head.addEventListener('click', () => head.parentElement.classList.toggle('open'));
+    });
+  }
+  search.addEventListener('input', renderTools);
+  renderTools();
+
+  /* ---------- mermaid ---------- */
+  function drawMermaid() {
+    if (!window.mermaid) return;
+    window.mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      themeVariables: {
+        background: '#0c111a',
+        primaryColor: '#151e2e',
+        primaryBorderColor: '#38bdf8',
+        primaryTextColor: '#d9e3ef',
+        lineColor: '#3b4d66',
+        secondaryColor: '#111826',
+        tertiaryColor: '#0c111a',
+        fontSize: '13px',
+      },
+      flowchart: { curve: 'basis', padding: 12 },
+      sequence: { actorMargin: 34, messageMargin: 26, boxMargin: 8 },
+    });
+    window.mermaid.run({ querySelector: '.mermaid' }).catch(() => {});
+  }
+
+  const start = () => { drawCharts(); drawGraph(); drawMermaid(); };
+  if (document.readyState === 'complete') setTimeout(start, 60);
+  else window.addEventListener('load', () => setTimeout(start, 60));
+  setTimeout(start, 900);
+})();
+</script>
+</body>
+</html>

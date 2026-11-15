@@ -199,6 +199,58 @@ export class OpenChamberBridge {
     }
   }
 
+  /**
+   * Attach to a profile that ShardX already launched (for example from the
+   * launcher's own window) without starting or restarting it. The sandbox is
+   * created lazily through `bindSession`, so a stale binding is cleaned first.
+   */
+  async attachRunningProfile(
+    sessionId: string,
+    profileId: string,
+    profileName = '',
+    cdpWebSocketDebuggerUrl = '',
+  ): Promise<SessionSandbox> {
+    const owner = this.router.owner(profileId);
+    if (owner && owner !== sessionId) {
+      throw new SessionIsolationError(
+        `profile ${profileId} 已被会话 ${owner} 独占`,
+        'PROFILE_LOCKED',
+      );
+    }
+    const existing = this.router.getByProfile(profileId);
+    if (
+      existing &&
+      existing.sessionId === sessionId &&
+      existing.status === 'running' &&
+      existing.cdp?.isOpen()
+    ) {
+      return existing;
+    }
+    let wsUrl = cdpWebSocketDebuggerUrl.trim();
+    if (!wsUrl) {
+      const list = await this.api.running();
+      const hit = list.find((item) => item.profileId === profileId);
+      wsUrl = hit?.cdpWebSocketDebuggerUrl ?? '';
+    }
+    if (!wsUrl) {
+      throw new CdpError(`profile ${profileId} 没有可用的 CDP 地址`, 0, 'NO_CDP');
+    }
+
+    if (existing) this.router.unbindProfile(profileId);
+    this.router.bindSession(sessionId, profileId, profileName || profileId);
+    try {
+      const cdp = new CdpMultiplexer(profileId);
+      await cdp.connect(wsUrl, 15000, this.api.authHeaders());
+      await enableCdpDomains(cdp);
+      return this.router.attachCdp(profileId, wsUrl, cdp);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.router.markError(profileId, message);
+      this.router.unbindProfile(profileId);
+      throw error;
+    }
+  }
+
   async releaseProfile(profileId: string): Promise<void> {
     const sandbox = this.router.getByProfile(profileId);
     if (!sandbox) {

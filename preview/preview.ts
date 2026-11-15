@@ -7,6 +7,126 @@ import type { Profile, Proxy, TargetInfo } from '../panel/types';
 
 const store = new Map<string, string>();
 
+/**
+ * The launcher mirror speaks CDP through the bridge service. The preview has no
+ * service, so this fake answers the same routes with one synthetic frame so the
+ * mirror layout can be reviewed without a live launcher.
+ */
+let mirrorEvents: Array<Record<string, unknown>> = [];
+let mirrorFrame: string | null = null;
+
+function drawLauncherFrame(): string {
+  if (mirrorFrame !== null) return mirrorFrame;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1280;
+  canvas.height = 800;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+  ctx.fillStyle = '#0f1117';
+  ctx.fillRect(0, 0, 1280, 800);
+  ctx.fillStyle = '#141824';
+  ctx.fillRect(0, 0, 250, 800);
+  ctx.fillStyle = '#1b2233';
+  ctx.fillRect(250, 0, 1030, 64);
+  ctx.fillStyle = '#3b82f6';
+  ctx.fillRect(250, 63, 1030, 1);
+
+  ctx.fillStyle = '#e5edf8';
+  ctx.font = '600 22px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+  ctx.fillText('ShardBrowser', 24, 42);
+  ctx.fillStyle = '#5b6779';
+  ctx.font = '12px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+  ctx.fillText('指纹浏览器 · 全部配置', 24, 64);
+
+  const menu = ['全部配置', '代理管理', '扩展插件', '应用设置', '关于'];
+  menu.forEach((item, index) => {
+    const y = 108 + index * 44;
+    if (index === 0) {
+      ctx.fillStyle = '#1c2740';
+      ctx.fillRect(12, y - 22, 226, 36);
+      ctx.fillStyle = '#60a5fa';
+    } else {
+      ctx.fillStyle = '#8b98ad';
+    }
+    ctx.font = `${index === 0 ? '600 ' : ''}13px "Segoe UI", "Microsoft YaHei UI", sans-serif`;
+    ctx.fillText(item, 26, y);
+  });
+
+  ctx.fillStyle = '#e5edf8';
+  ctx.font = '600 20px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+  ctx.fillText('全部配置', 282, 40);
+  ctx.fillStyle = '#8b98ad';
+  ctx.font = '12px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+  ctx.fillText('22 个环境 · 2 个运行中', 400, 40);
+
+  ctx.fillStyle = '#10141f';
+  ctx.strokeStyle = '#1f2937';
+  ctx.beginPath();
+  ctx.roundRect(282, 86, 960, 40, 8);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#5b6779';
+  ctx.font = '12px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+  ctx.fillText('搜索环境名称、备注或分组', 300, 111);
+
+  const rows = [
+    ['7-b5wku4o799r7vz@gmail.com', 'Google', 'ANGLE (NVIDIA GeForce GT 1030)', '运行中', '#10b981'],
+    ['Google Ads 01', 'Google', 'ANGLE (NVIDIA GeForce GT 1030)', '已停止', '#5b6779'],
+    ['TikTok 矩阵 01', '新账号', 'ANGLE (Intel UHD Graphics 630)', '已停止', '#5b6779'],
+    ['Amazon 卖家', '未分类', 'ANGLE (AMD Radeon RX 580)', '运行中', '#10b981'],
+    ['eBay 小号', '未分类', 'ANGLE (NVIDIA GeForce RTX 3060)', '已停止', '#5b6779'],
+  ];
+  rows.forEach((row, index) => {
+    const y = 156 + index * 66;
+    ctx.fillStyle = index % 2 === 0 ? '#121828' : '#0f1420';
+    ctx.fillRect(282, y, 960, 58);
+    ctx.strokeStyle = '#1b2436';
+    ctx.strokeRect(282, y, 960, 58);
+    ctx.fillStyle = '#e5edf8';
+    ctx.font = '600 13px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+    ctx.fillText(row[0], 302, y + 24);
+    ctx.fillStyle = '#5b6779';
+    ctx.font = '11px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+    ctx.fillText(row[2], 302, y + 43);
+    ctx.fillStyle = '#8b98ad';
+    ctx.font = '11px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+    ctx.fillText(row[1], 720, y + 32);
+    ctx.fillStyle = row[4];
+    ctx.fillText(String(row[3]), 900, y + 32);
+    ctx.fillStyle = '#1c2740';
+    ctx.beginPath();
+    ctx.roundRect(1000, y + 16, 76, 26, 6);
+    ctx.fill();
+    ctx.fillStyle = '#93c5fd';
+    ctx.font = '11px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+    ctx.fillText('启动', 1024, y + 33);
+  });
+
+  mirrorFrame = canvas.toDataURL('image/jpeg', 0.82).split(',')[1] ?? '';
+  return mirrorFrame;
+}
+
+function mirrorCdpResult(method: string): Record<string, unknown> {
+  if (method === 'Page.captureScreenshot') return { data: drawLauncherFrame() };
+  if (method === 'Page.getLayoutMetrics') {
+    return { cssLayoutViewport: { pageX: 0, pageY: 0, clientWidth: 1280, clientHeight: 800 } };
+  }
+  if (method === 'Runtime.evaluate') {
+    return {
+      result: {
+        value: JSON.stringify({
+          url: 'http://tauri.localhost/',
+          title: '全部配置 – ShardBrowser',
+          w: 1280,
+          h: 800,
+          dpr: 1,
+        }),
+      },
+    };
+  }
+  return {};
+}
+
 const fakeHost = {
   storage: {
     get: async (key: string) => store.get(key) ?? null,
@@ -41,6 +161,43 @@ const fakeHost = {
         }
       }
       return envelope({ state: workspaceState });
+    }
+    if (request.path === '/launcher/status') {
+      return envelope({
+        found: true,
+        cdpPort: 40326,
+        targets: [
+          {
+            id: 'preview-launcher',
+            title: '全部配置 – ShardBrowser',
+            url: 'http://tauri.localhost/',
+            webSocketDebuggerUrl: 'ws://preview.local/devtools/page/preview',
+          },
+        ],
+        ports: [40326],
+        injectedArguments: '--remote-debugging-port=40326 --remote-allow-origins=*',
+      });
+    }
+    if (request.path === '/cdp/open') {
+      mirrorEvents = [];
+      return envelope({ sessionId: 'preview-cdp' });
+    }
+    if (request.path === '/cdp/send') {
+      const payload = JSON.parse(request.body ?? '{}') as {
+        message?: { id?: number; method?: string };
+      };
+      const message = payload.message ?? {};
+      mirrorEvents.push({ id: message.id, result: mirrorCdpResult(String(message.method ?? '')) });
+      return envelope({ sent: true });
+    }
+    if (request.path === '/cdp/events') {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const events = mirrorEvents.splice(0);
+      return envelope({ events });
+    }
+    if (request.path === '/cdp/close') {
+      mirrorEvents = [];
+      return envelope({ closed: true });
     }
     if (request.path === '/shardx/discover') {
       return envelope({ found: true, running: true, port: 40325, token: 'preview.token', version: '2.1.4' });
@@ -248,6 +405,14 @@ const fakeCdp = {
 transport.setHost(fakeHost);
 const api = new ShardXApiClient(fakeHost);
 const router = new SessionIsolationRouter();
+
+const bootParams = new URLSearchParams(location.search);
+try {
+  const folderView = bootParams.get('folderView');
+  if (folderView === 'cards' || folderView === 'list') window.localStorage.setItem('shardx-folder-view', folderView);
+} catch {
+  /* preview may run with storage disabled */
+}
 
 void (async () => {
   await api.init();

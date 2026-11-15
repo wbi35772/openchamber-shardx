@@ -33,7 +33,7 @@ const execFileAsync = promisify(execFile);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = JSON.parse(readFileSync(join(HERE, 'manifest.json'), 'utf8'));
 const TOOLS = Array.isArray(CATALOG.tools) ? CATALOG.tools : [];
-const SERVER = { name: 'shardx', version: CATALOG.version || '1.2.0' };
+const SERVER = { name: 'shardx', version: CATALOG.version || '1.4.0' };
 
 const API_TIMEOUT_MS = 15_000;
 const START_TIMEOUT_MS = 90_000;

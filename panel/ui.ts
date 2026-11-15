@@ -1,16 +1,41 @@
 import type { CdpMultiplexer } from './cdp';
 import { ShardXApiClient } from './api';
+import type { DiscoverResult } from './api';
 import { SessionIsolationRouter } from './router';
 import type { SessionSandbox } from './router';
 import { OpenChamberBridge, isRunning } from './bridge';
 import { WorkspaceClient } from './workspace';
 import type { Assignment, Mapping, ServerStatus, Skill, SkillStep, WorkspaceState } from './workspace';
-import type { Profile, Proxy, TargetInfo } from './types';
+import type { Profile, Proxy, RunningProfile, TargetInfo } from './types';
+import { transport } from './transport';
+import { LauncherMirror } from './mirror';
 import { el, clear, button, iconButton, icon, badge, toast } from './util';
 
 type TabKind = 'console' | 'mapping' | 'skills' | 'server' | 'instance';
 type AppTabKind = Exclude<TabKind, 'instance'>;
 type ViewMode = 'cards' | 'list' | 'groups';
+type SortKey =
+  | 'manual'
+  | 'name'
+  | 'platform'
+  | 'status'
+  | 'proxy'
+  | 'folder'
+  | 'recent'
+  | 'created'
+  | 'id';
+
+const SORT_OPTIONS: Array<[SortKey, string]> = [
+  ['manual', '手动顺序'],
+  ['name', '环境名称'],
+  ['platform', '平台'],
+  ['status', '运行状态'],
+  ['proxy', '代理'],
+  ['folder', '文件夹'],
+  ['recent', '最近启动'],
+  ['created', '创建时间'],
+  ['id', '环境 ID'],
+];
 
 const APP_TABS: Record<AppTabKind, { label: string; icon: string; title: string }> = {
   console: { label: '环境', icon: 'box', title: '指纹环境列表' },
@@ -68,6 +93,10 @@ function sessionTag(id: string): string {
 function str(value: unknown): string {
   if (value === null || value === undefined) return '';
   return String(value);
+}
+
+function profileFolder(profile: Profile): string {
+  return String((profile as any).folder ?? '').trim() || '未分类';
 }
 
 function num(value: unknown): number | null {
@@ -202,13 +231,35 @@ export class ShardXTabWorkspaceUI {
   private consoleStats!: HTMLElement;
   private consoleError!: HTMLElement;
   private consoleApiStatus!: HTMLElement;
+  private consolePanel!: HTMLElement;
+  private homeBar!: HTMLElement;
+  private homeSwitch!: HTMLElement;
+  private homeSyncBtn!: HTMLButtonElement;
+  private homeGroupsBtn!: HTMLButtonElement;
+  private mirrorHost!: HTMLElement;
+  private toolbarTools!: HTMLElement;
   private sessionInput!: HTMLInputElement;
   private searchInput!: HTMLInputElement;
   private platformFilter!: HTMLSelectElement;
+  private homeMode: 'mirror' | 'list' = 'mirror';
+  private mirror: LauncherMirror | null = null;
+  private runningProfiles: RunningProfile[] = [];
+  private dismissedProfiles = new Set<string>();
+  private syncingRunning = false;
 
   private profiles: Profile[] = [];
   private proxies: Proxy[] = [];
   private viewMode: ViewMode = 'cards';
+  private sortKey: SortKey = 'manual';
+  private sortDir: 1 | -1 = 1;
+  private sortSelect!: HTMLSelectElement;
+  private sortDirBtn!: HTMLButtonElement;
+  private activeFolder: string | null = null;
+  private listFolder: string | null = null;
+  private folderView: 'cards' | 'list' = 'cards';
+  private profileOrder: Record<string, string[]> = {};
+  private folderProfiles = new Map<string, Profile[]>();
+  private dragProfileId: string | null = null;
   private viewSwitch!: HTMLElement;
   private workspace = new WorkspaceClient();
   private mappings: Mapping[] = [];
@@ -237,6 +288,10 @@ export class ShardXTabWorkspaceUI {
   private refreshTimer: number | null = null;
   private destroyed = false;
   private discoverTried = false;
+  private lastLauncherCheck = 0;
+  private lastReviveAt = 0;
+  private reviveInFlight = false;
+  private launcherOnline = false;
 
   constructor(container: HTMLElement, api: ShardXApiClient, router: SessionIsolationRouter, sessionId = 'default') {
     this.container = container;
@@ -246,6 +301,25 @@ export class ShardXTabWorkspaceUI {
     try {
       const saved = window.localStorage.getItem('shardx-view-mode');
       if (saved === 'cards' || saved === 'list' || saved === 'groups') this.viewMode = saved;
+      const savedFolderView = window.localStorage.getItem('shardx-folder-view');
+      if (savedFolderView === 'cards' || savedFolderView === 'list') this.folderView = savedFolderView;
+      const savedListFolder = window.localStorage.getItem('shardx-list-folder');
+      if (savedListFolder) this.listFolder = savedListFolder;
+      const savedOrder = window.localStorage.getItem('shardx-profile-order');
+      if (savedOrder) {
+        const parsed = JSON.parse(savedOrder) as Record<string, unknown>;
+        for (const [folder, ids] of Object.entries(parsed ?? {})) {
+          if (Array.isArray(ids)) this.profileOrder[folder] = ids.filter((id): id is string => typeof id === 'string');
+        }
+      }
+      const savedHome = window.localStorage.getItem('shardx-home-mode');
+      if (savedHome === 'list' || savedHome === 'mirror') this.homeMode = savedHome;
+      const savedSort = window.localStorage.getItem('shardx-sort');
+      if (savedSort) {
+        const parsed = JSON.parse(savedSort) as Record<string, unknown>;
+        if (SORT_OPTIONS.some(([key]) => key === parsed.key)) this.sortKey = parsed.key as SortKey;
+        if (parsed.dir === 1 || parsed.dir === -1) this.sortDir = parsed.dir;
+      }
     } catch {
       /* storage may be unavailable in a sandboxed guest */
     }
@@ -261,6 +335,10 @@ export class ShardXTabWorkspaceUI {
     this.buildMappingTab();
     this.buildSkillsTab();
     this.buildServerTab();
+    this.mirror = new LauncherMirror(this.mirrorHost, transport, {
+      onLocalList: () => this.setHomeMode('list'),
+    });
+    this.applyHomeMode();
     this.renderTabBar();
     this.activateTab('console');
 
@@ -289,6 +367,8 @@ export class ShardXTabWorkspaceUI {
   destroy(): void {
     this.destroyed = true;
     if (this.refreshTimer !== null) window.clearInterval(this.refreshTimer);
+    this.mirror?.dispose();
+    this.mirror = null;
     for (const id of [...this.tabs.keys()]) this.closeTab(id, true);
     this.tabs.clear();
     this.root.remove();
@@ -331,6 +411,28 @@ export class ShardXTabWorkspaceUI {
     }
     this.platformFilter.addEventListener('change', () => this.renderProfiles());
 
+    this.sortSelect = el('select', { class: 'select sort-select', attrs: { title: '排序字段' } }) as HTMLSelectElement;
+    for (const [value, label] of SORT_OPTIONS) {
+      this.sortSelect.appendChild(el('option', { text: label, attrs: { value } }));
+    }
+    this.sortSelect.value = this.sortKey;
+    this.sortSelect.addEventListener('change', () => {
+      const next = this.sortSelect.value as SortKey;
+      if (next === this.sortKey) this.setSort(next, this.sortDir);
+      else this.setSort(next, next === 'recent' || next === 'created' ? -1 : 1);
+    });
+
+    this.sortDirBtn = button(this.sortDir === 1 ? '升序 ↑' : '降序 ↓', {
+      class: 'btn small sort-dir',
+      title: '切换排序方向（也可以双击表头）',
+      onClick: () => {
+        this.sortDir = this.sortDir === 1 ? -1 : 1;
+        this.saveSort();
+        this.renderProfiles();
+      },
+    }) as HTMLButtonElement;
+    this.sortDirBtn.disabled = this.sortKey === 'manual';
+
     const refreshBtn = iconButton('refresh', {
       title: '刷新环境列表',
       onClick: () => void this.refreshAll(),
@@ -356,16 +458,55 @@ export class ShardXTabWorkspaceUI {
       el('div', { class: 'spacer' }),
       this.viewSwitch,
     );
+    this.toolbarTools = toolbarTools;
     toolbar.append(toolbarTop, toolbarTools);
 
+    this.homeSwitch = el('div', { class: 'segmented home-switch' });
+    this.renderHomeSwitch();
+    this.homeGroupsBtn = button('本地分组', {
+      class: 'btn small ghost',
+      icon: 'branch',
+      title: '回到本地列表：文件夹以标签页呈现，点击标签切换列表',
+      onClick: () => {
+        this.setHomeMode('list');
+        this.setViewMode('list');
+      },
+    }) as HTMLButtonElement;
+    this.homeSyncBtn = button('同步运行实例', {
+      class: 'btn small ghost',
+      icon: 'refresh',
+      title: '把主界面启动、但还没有调试端口的实例重启后接管到标签页',
+      onClick: () => void this.takeOverRunning(),
+    }) as HTMLButtonElement;
+    this.homeSyncBtn.hidden = true;
+    this.homeBar = el(
+      'div',
+      { class: 'home-bar' },
+      this.homeSwitch,
+      el('div', {
+        class: 'home-hint',
+        text: '主界面直接镜像 ShardX 启动器本体；点一下画面后就能用鼠标和键盘操作它',
+      }),
+      el('div', { class: 'spacer' }),
+      this.homeGroupsBtn,
+      this.homeSyncBtn,
+    );
+
     this.consoleError = el('div', { class: 'error-banner', attrs: { hidden: true } });
+    this.mirrorHost = el('div', { class: 'mirror-host' });
     this.consoleGrid = el('div', { class: 'grid two' });
     if (this.viewMode !== 'cards') {
       this.consoleGrid.className = 'profile-view';
     }
-    const panel = el('div', { class: 'tab-panel' }, this.consoleError, this.consoleGrid);
+    this.consolePanel = el(
+      'div',
+      { class: 'tab-panel panel-console' },
+      this.consoleError,
+      this.mirrorHost,
+      this.consoleGrid,
+    );
 
-    view.append(toolbar, panel);
+    view.append(toolbar, this.homeBar, this.consolePanel);
 
     this.tabs.set('console', {
       id: 'console',
@@ -410,6 +551,49 @@ export class ShardXTabWorkspaceUI {
     this.consoleGrid.className = mode === 'cards' ? 'grid two' : 'profile-view';
     this.renderViewSwitch();
     this.renderProfiles();
+  }
+
+  private renderHomeSwitch(): void {
+    clear(this.homeSwitch);
+    const modes: Array<['mirror' | 'list', string, string]> = [
+      ['mirror', '主界面', '镜像 ShardX 启动器自带的页面，和它完全同步'],
+      ['list', '本地列表', '扩展自己的指纹环境列表，可搜索、分组和拖拽排序'],
+    ];
+    for (const [mode, label, title] of modes) {
+      this.homeSwitch.appendChild(
+        el('button', {
+          class: `seg${this.homeMode === mode ? ' on' : ''}`,
+          attrs: { type: 'button', title },
+          text: label,
+          on: { click: () => this.setHomeMode(mode) },
+        }),
+      );
+    }
+  }
+
+  private setHomeMode(mode: 'mirror' | 'list'): void {
+    if (this.homeMode === mode) return;
+    this.homeMode = mode;
+    try {
+      window.localStorage.setItem('shardx-home-mode', mode);
+    } catch {
+      /* storage can be unavailable; the in-memory choice still applies */
+    }
+    this.applyHomeMode();
+  }
+
+  private applyHomeMode(): void {
+    const mirrorOn = this.homeMode === 'mirror';
+    this.renderHomeSwitch();
+    if (this.toolbarTools) this.toolbarTools.hidden = mirrorOn;
+    if (this.mirrorHost) this.mirrorHost.hidden = !mirrorOn;
+    if (this.consoleGrid) this.consoleGrid.hidden = mirrorOn;
+    if (this.consolePanel) this.consolePanel.classList.toggle('mirror-mode', mirrorOn);
+    if (!mirrorOn) this.renderProfiles();
+    if (this.homeGroupsBtn) this.homeGroupsBtn.hidden = !mirrorOn;
+    this.updateUnsyncedNotice();
+    const live = mirrorOn && this.activeTabId === 'console' && !this.destroyed;
+    this.mirror?.setActive(live);
   }
 
   // ------------------------------------------------------------------
@@ -1611,12 +1795,17 @@ export class ShardXTabWorkspaceUI {
       tab.view.style.display = tabId === id ? 'flex' : 'none';
       tab.button?.classList.toggle('active', tabId === id);
     }
-    if (record.kind === 'console') void this.refreshAll(true);
-    else if (record.kind === 'mapping' || record.kind === 'skills') void this.refreshWorkspace(true);
-    else if (record.kind === 'server') void this.refreshServer();
-    else {
-      const controller = this.controllers.get(id);
-      if (controller) void this.refreshFrame(controller, true);
+    if (record.kind === 'console') {
+      if (this.homeMode === 'mirror') this.mirror?.setActive(true);
+      void this.refreshAll(true);
+    } else {
+      this.mirror?.setActive(false);
+      if (record.kind === 'mapping' || record.kind === 'skills') void this.refreshWorkspace(true);
+      else if (record.kind === 'server') void this.refreshServer();
+      else {
+        const controller = this.controllers.get(id);
+        if (controller) void this.refreshFrame(controller, true);
+      }
     }
   }
 
@@ -1631,6 +1820,7 @@ export class ShardXTabWorkspaceUI {
     }
     record.view.remove();
     this.tabs.delete(id);
+    if (!silent && record.profileId) this.dismissedProfiles.add(record.profileId);
     if (this.activeTabId === id) {
       this.activeTabId = 'console';
       this.activateTab('console');
@@ -1639,11 +1829,11 @@ export class ShardXTabWorkspaceUI {
     if (!silent) toast('标签已关闭（实例仍在运行，可在控制台重新打开）', 'info');
   }
 
-  private openInstanceTab(sandbox: SessionSandbox, profile: Profile | null): void {
+  private openInstanceTab(sandbox: SessionSandbox, profile: Profile | null, activate = true): void {
     const id = `instance:${sandbox.profileId}`;
     const existing = this.tabs.get(id);
     if (existing) {
-      this.activateTab(id);
+      if (activate) this.activateTab(id);
       return;
     }
 
@@ -1660,7 +1850,7 @@ export class ShardXTabWorkspaceUI {
     });
     this.views.appendChild(controller.view);
     this.renderTabBar();
-    this.activateTab(id);
+    if (activate) this.activateTab(id);
     void this.saveInstanceMapping(sandbox);
   }
 
@@ -1709,39 +1899,138 @@ export class ShardXTabWorkspaceUI {
   }
 
   /**
-   * First load without a stored token: read the launcher's settings through the
-   * bridge and adopt its port + a freshly minted bearer. Best effort and silent;
-   * a manual token still wins and is never overwritten.
+   * Keep the launcher reachable across host reloads.
+   *
+   * A stored bearer used to skip discovery entirely, so a launcher closed while
+   * OpenChamber restarted left every API call failing until it was opened by
+   * hand. Discovery is cheap (settings read + health probe); when it reports the
+   * launcher is down, the bridge starts it again without asking for a path.
    */
   private async autoDiscover(): Promise<void> {
-    if (this.discoverTried || this.api.hasToken()) return;
+    if (this.reviveInFlight) return;
+    const now = Date.now();
+    if (this.discoverTried && now - this.lastLauncherCheck < 20000) return;
     this.discoverTried = true;
+    this.lastLauncherCheck = now;
+    let info: DiscoverResult;
     try {
-      const info = await this.api.discover();
-      if (!info?.found) return;
-      await this.api.applyDiscovered(info);
-      this.discoverTried = true;
-      this.updateApiStatus();
-      if (info.running === false) {
-        toast('已自动读取 ShardX 配置，但启动器当前未运行', 'warning', 6000);
-      } else {
-        toast(`已自动连接 ShardX${info.version ? ` ${info.version}` : ''}（端口 ${info.port}）`, 'success', 4000);
-      }
+      info = await this.api.discover();
     } catch (error) {
       console.warn('[ShardX] 自动检测失败', error);
+      return;
     }
+    if (!info?.found) return;
+    await this.api.applyDiscovered(info).catch((error) => {
+      console.warn('[ShardX] 应用自动检测结果失败', error);
+    });
+    this.updateApiStatus();
+    if (info.running !== false) {
+      if (!this.launcherOnline) {
+        this.launcherOnline = true;
+        toast(`已自动连接 ShardX${info.version ? ` ${info.version}` : ''}（端口 ${info.port}）`, 'success', 4000);
+      }
+      return;
+    }
+    this.launcherOnline = false;
+    await this.reviveLauncher();
+  }
+
+  /** Start the launcher once when discovery says it is not running. */
+  private async reviveLauncher(): Promise<void> {
+    if (this.reviveInFlight) return;
+    if (Date.now() - this.lastReviveAt < 30000) return;
+    this.reviveInFlight = true;
+    this.lastReviveAt = Date.now();
+    try {
+      const path = this.serverPathInput?.value.trim() ?? '';
+      const status = await this.workspace.serverControl('start', path);
+      if (status?.running) {
+        const fresh = await this.api.discover().catch(() => null);
+        if (fresh?.found) await this.api.applyDiscovered(fresh).catch(() => undefined);
+        this.launcherOnline = true;
+        this.updateApiStatus();
+        toast(`ShardX 未运行，已自动启动${fresh?.version ? ` ${fresh.version}` : ''}`, 'success', 4000);
+        return;
+      }
+      toast('ShardX 未运行，自动启动未成功，请到「服务器」页检查启动器路径', 'warning', 6000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast(`ShardX 未运行，自动启动失败：${message}`, 'warning', 6000);
+    } finally {
+      this.reviveInFlight = false;
+    }
+  }
+
+  private unsyncedRunning(): RunningProfile[] {
+    return this.runningProfiles.filter((item) => {
+      if (item.cdpWebSocketDebuggerUrl) return false;
+      if (this.dismissedProfiles.has(item.profileId)) return false;
+      const owner = this.router.owner(item.profileId);
+      return !owner || owner === this.sessionId;
+    });
+  }
+
+  private updateUnsyncedNotice(): void {
+    if (!this.homeSyncBtn) return;
+    const count = this.unsyncedRunning().length;
+    this.homeSyncBtn.hidden = count === 0 || this.homeMode !== 'mirror';
+    this.homeSyncBtn.textContent = `接管 ${count} 个运行实例`;
+    this.homeSyncBtn.title =
+      '这些实例由 ShardX 主界面直接启动，没有调试端口。点击会重启它们（原窗口关闭）并镜像到标签页。';
+  }
+
+  /**
+   * Browsers launched by the launcher window are not started with a CDP port.
+   * Restart each one through the launcher API (which adds the debugging flags)
+   * so it can be mirrored into its own tab.
+   */
+  private async takeOverRunning(): Promise<void> {
+    const targets = this.unsyncedRunning();
+    if (targets.length === 0) return;
+    if (this.syncingRunning) return;
+    this.syncingRunning = true;
+    let taken = 0;
+    try {
+      for (const item of targets) {
+        if (this.destroyed) break;
+        const profile = this.profiles.find((candidate) => candidate.id === item.profileId) ?? null;
+        const name = profile?.name || item.profileId;
+        try {
+          await this.api.stopProfile(item.profileId).catch(() => null);
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 400));
+          const sandbox = await this.bridge.startSessionProfile(this.sessionId, item.profileId, name);
+          this.dismissedProfiles.delete(item.profileId);
+          this.openInstanceTab(sandbox, profile, false);
+          taken += 1;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          toast(`接管 ${name} 失败：${message}`, 'error', 6000);
+        }
+      }
+    } finally {
+      this.syncingRunning = false;
+    }
+    if (taken > 0) toast(`已接管 ${taken} 个运行实例`, 'success', 2600);
+    await this.refreshAll(true);
   }
 
   async refreshAll(silent = false): Promise<void> {
     if (this.destroyed) return;
     await this.autoDiscover();
     try {
-      const [profiles, proxies] = await Promise.all([this.api.profiles(), this.api.proxies()]);
+      const [profiles, proxies, running] = await Promise.all([
+        this.api.profiles(),
+        this.api.proxies(),
+        this.api.running().catch(() => [] as RunningProfile[]),
+      ]);
       this.profiles = profiles;
       this.proxies = proxies;
+      this.runningProfiles = running;
+      this.updateUnsyncedNotice();
       this.setConsoleError(null);
       this.updateApiStatus();
       this.renderProfiles();
+      void this.syncRunningTabs();
       if (!silent) toast(`已加载 ${profiles.length} 个指纹环境`, 'success', 2200);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1752,6 +2041,75 @@ export class ShardXTabWorkspaceUI {
       }
       this.lastErrorShown = message;
     }
+  }
+
+  /**
+   * Every browser ShardX reports as running gets an instance tab. The tab is
+   * opened in the background so the current view (usually the launcher mirror)
+   * does not jump; a tab the user closed is remembered until that browser stops.
+   */
+  private async syncRunningTabs(): Promise<void> {
+    if (this.destroyed || this.syncingRunning) return;
+    this.syncingRunning = true;
+    try {
+      const runningIds = new Set(this.runningProfiles.map((item) => item.profileId));
+      for (const profileId of [...this.dismissedProfiles]) {
+        if (!runningIds.has(profileId)) this.dismissedProfiles.delete(profileId);
+      }
+      for (const item of this.runningProfiles) {
+        if (this.destroyed) return;
+        if (!item.cdpWebSocketDebuggerUrl) continue;
+        const tabId = `instance:${item.profileId}`;
+        if (this.tabs.has(tabId) || this.dismissedProfiles.has(item.profileId)) continue;
+        if (this.tabs.size >= 18) break;
+        const owner = this.router.owner(item.profileId);
+        if (owner && owner !== this.sessionId) continue;
+        const profile = this.profiles.find((candidate) => candidate.id === item.profileId) ?? null;
+        try {
+          const sandbox = await this.bridge.attachRunningProfile(
+            this.sessionId,
+            item.profileId,
+            profile?.name ?? item.profileId,
+            item.cdpWebSocketDebuggerUrl,
+          );
+          this.openInstanceTab(sandbox, profile, false);
+        } catch (error) {
+          console.warn('[ShardX] 接管运行中的实例失败', item.profileId, error);
+        }
+      }
+    } finally {
+      this.syncingRunning = false;
+      this.updateUnsyncedNotice();
+    }
+  }
+
+  /**
+   * Reuse an already-running browser instead of asking ShardX to start it
+   * again. A second start is rejected by the launcher, so every caller that
+   * wants "this profile in this session" goes through here.
+   */
+  private async attachOrStart(profile: Profile, sessionId: string): Promise<SessionSandbox> {
+    const name = profile.name || profile.id;
+    const known = this.runningProfiles.find((item) => item.profileId === profile.id);
+    if (known?.cdpWebSocketDebuggerUrl) {
+      this.dismissedProfiles.delete(profile.id);
+      return this.bridge.attachRunningProfile(sessionId, profile.id, name, known.cdpWebSocketDebuggerUrl);
+    }
+    if (isRunning(profile)) {
+      const fresh = await this.api.running().catch(() => [] as RunningProfile[]);
+      this.runningProfiles = fresh;
+      const hit = fresh.find((item) => item.profileId === profile.id);
+      if (hit?.cdpWebSocketDebuggerUrl) {
+        this.dismissedProfiles.delete(profile.id);
+        return this.bridge.attachRunningProfile(sessionId, profile.id, name, hit.cdpWebSocketDebuggerUrl);
+      }
+      // Started from the launcher window: no debugging port, so restart it
+      // through the API (which always injects the CDP flags) before attaching.
+      await this.api.stopProfile(profile.id).catch(() => null);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
+    }
+    this.dismissedProfiles.delete(profile.id);
+    return this.bridge.startSessionProfile(sessionId, profile.id, name);
   }
 
   private updateStats(): void {
@@ -1766,6 +2124,148 @@ export class ShardXTabWorkspaceUI {
     );
   }
 
+  private applySavedOrder(profiles: Profile[]): Profile[] {
+    const folderOf = profileFolder;
+    const groups = new Map<string, Profile[]>();
+    for (const profile of profiles) {
+      const key = folderOf(profile);
+      const list = groups.get(key) ?? [];
+      list.push(profile);
+      groups.set(key, list);
+    }
+    const ordered: Profile[] = [];
+    for (const [folder, list] of groups) {
+      const saved = this.profileOrder[folder];
+      if (!saved || saved.length === 0) {
+        ordered.push(...list);
+        continue;
+      }
+      const byId = new Map(list.map((profile) => [profile.id, profile]));
+      const used = new Set<string>();
+      for (const id of saved) {
+        const profile = byId.get(id);
+        if (profile && !used.has(id)) {
+          ordered.push(profile);
+          used.add(id);
+        }
+      }
+      for (const profile of list) if (!used.has(profile.id)) ordered.push(profile);
+    }
+    return ordered;
+  }
+
+  private statusRank(profile: Profile): number {
+    if (this.router.owner(profile.id)) return 2;
+    return isRunning(profile) ? 1 : 0;
+  }
+
+  private sortValue(profile: Profile, key: SortKey): string | number {
+    switch (key) {
+      case 'name':
+        return (profile.name || profile.id).toLowerCase();
+      case 'platform':
+        return profileOs(profile).toLowerCase();
+      case 'status':
+        return this.statusRank(profile);
+      case 'proxy':
+        return proxyText(this.findProxy(profile)).toLowerCase();
+      case 'folder':
+        return profileFolder(profile).toLowerCase();
+      case 'recent':
+        return num((profile as any).last_launched_at) ?? 0;
+      case 'created':
+        return num((profile as any).created_at) ?? 0;
+      case 'id':
+        return profile.id.toLowerCase();
+      default:
+        return 0;
+    }
+  }
+
+  private sortProfiles(list: Profile[]): Profile[] {
+    if (this.sortKey === 'manual') return list;
+    const key = this.sortKey;
+    const dir = this.sortDir;
+    return [...list].sort((a, b) => {
+      const av = this.sortValue(a, key);
+      const bv = this.sortValue(b, key);
+      let cmp =
+        typeof av === 'number' && typeof bv === 'number'
+          ? av - bv
+          : String(av).localeCompare(String(bv), 'zh-CN', { numeric: true, sensitivity: 'base' });
+      if (cmp === 0) {
+        cmp = (a.name || a.id).localeCompare(b.name || b.id, 'zh-CN', { numeric: true, sensitivity: 'base' });
+      }
+      return cmp * dir;
+    });
+  }
+
+  private saveSort(): void {
+    try {
+      window.localStorage.setItem('shardx-sort', JSON.stringify({ key: this.sortKey, dir: this.sortDir }));
+    } catch {
+      /* storage can be unavailable; the in-memory choice still applies */
+    }
+  }
+
+  private setSort(key: SortKey, dir: 1 | -1): void {
+    this.sortKey = key;
+    this.sortDir = dir;
+    this.saveSort();
+    if (this.sortSelect) this.sortSelect.value = key;
+    if (this.sortDirBtn) {
+      this.sortDirBtn.disabled = key === 'manual';
+      this.sortDirBtn.textContent = dir === 1 ? '升序 ↑' : '降序 ↓';
+    }
+    this.renderProfiles();
+  }
+
+  private cycleSort(key: SortKey): void {
+    if (key === 'manual') {
+      if (this.sortKey !== 'manual') this.setSort('manual', 1);
+      return;
+    }
+    if (this.sortKey === key) {
+      this.setSort(key, this.sortDir === 1 ? -1 : 1);
+      return;
+    }
+    this.setSort(key, key === 'recent' || key === 'created' ? -1 : 1);
+  }
+
+  private sortHeader(label: string, key: SortKey): HTMLElement {
+    const active = this.sortKey === key && key !== 'manual';
+    const cell = el(
+      'span',
+      {
+        class: `psort${active ? ' on' : ''}`,
+        attrs: { role: 'button', tabindex: '0', title: `${label}：单击排序，双击切换升降序` },
+      },
+      el('span', { text: label }),
+      el('span', { class: `sort-arrow${active ? '' : ' muted'}`, text: active ? (this.sortDir === 1 ? '↑' : '↓') : '↕' }),
+    );
+    let timer: number | null = null;
+    cell.addEventListener('click', () => {
+      if (timer !== null) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        this.cycleSort(key);
+      }, 240);
+    });
+    cell.addEventListener('dblclick', () => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      this.cycleSort(key);
+    });
+    cell.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      this.cycleSort(key);
+    });
+    return cell;
+  }
+
   private renderProfiles(): void {
     if (!this.consoleGrid) return;
     this.updateStats();
@@ -1774,7 +2274,7 @@ export class ShardXTabWorkspaceUI {
     const query = (this.searchInput?.value ?? '').trim().toLowerCase();
     const platform = this.platformFilter?.value ?? 'all';
 
-    const filtered = this.profiles.filter((profile) => {
+    const filtered = this.sortProfiles(this.applySavedOrder(this.profiles)).filter((profile) => {
       const haystack = `${profile.name ?? ''} ${profile.id} ${(profile as any).folder ?? ''}`.toLowerCase();
       if (query && !haystack.includes(query)) return false;
       if (platform === 'all') return true;
@@ -1808,27 +2308,119 @@ export class ShardXTabWorkspaceUI {
       return;
     }
     if (this.viewMode === 'list') {
-      this.consoleGrid.appendChild(this.buildProfileTable(filtered));
+      this.buildProfileListWithTabs(filtered);
       return;
     }
     this.buildProfileGroups(filtered);
   }
 
-  private buildProfileTable(profiles: Profile[], showFolder = true): HTMLElement {
+  private buildProfileTable(profiles: Profile[], showFolder = true, dragFolder: string | null | undefined = undefined): HTMLElement {
     const table = el('div', { class: 'ptable' });
-    table.appendChild(
+    const head = el('div', { class: 'prow phead-row' });
+    const columns: Array<[string, SortKey]> = [
+      ['#', 'manual'],
+      ['环境', 'name'],
+      ['平台', 'platform'],
+      ['状态', 'status'],
+      ['代理', 'proxy'],
+    ];
+    for (const [label, key] of columns) head.appendChild(this.sortHeader(label, key));
+    head.appendChild(el('span', { class: 'pcell-act', text: '操作' }));
+    table.appendChild(head);
+    profiles.forEach((profile, index) => table.appendChild(this.buildProfileRow(profile, showFolder, index, dragFolder)));
+    return table;
+  }
+
+  /**
+   * Folder tabs inside the local list. The tab bar is the grouping control:
+   * each folder is a tab, clicking it swaps the table below to that folder's
+   * profiles, and "全部环境" keeps the flat list. No separate mode is needed to
+   * see or change grouping.
+   */
+  private buildProfileListWithTabs(profiles: Profile[]): void {
+    const ALL = '__all__';
+    const groups = new Map<string, Profile[]>();
+    for (const profile of profiles) {
+      const key = profileFolder(profile);
+      const list = groups.get(key) ?? [];
+      list.push(profile);
+      groups.set(key, list);
+    }
+    const ordered = [...groups.entries()].sort((a, b) => {
+      if (a[0] === '未分类') return 1;
+      if (b[0] === '未分类') return -1;
+      return a[0].localeCompare(b[0], 'zh');
+    });
+    if (ordered.length === 0) return;
+    this.folderProfiles = groups;
+
+    const keys = ordered.map(([name]) => name);
+    if (this.listFolder !== ALL && (!this.listFolder || !keys.includes(this.listFolder))) this.listFolder = ALL;
+    const activeKey = this.listFolder ?? ALL;
+    const activeList = activeKey === ALL ? profiles : groups.get(activeKey) ?? [];
+
+    const select = (key: string): void => {
+      if (this.listFolder === key) return;
+      this.listFolder = key;
+      try {
+        window.localStorage.setItem('shardx-list-folder', key);
+      } catch {
+        /* storage can be unavailable; the in-memory choice still applies */
+      }
+      this.renderProfiles();
+    };
+
+    const tabBar = el('div', { class: 'folder-tabs', attrs: { role: 'tablist' } });
+    const addTab = (key: string, label: string, list: Profile[], glyph: string): void => {
+      const active = key === activeKey;
+      const running = list.filter((profile) => isRunning(profile) || this.router.owner(profile.id)).length;
+      tabBar.appendChild(
+        el(
+          'button',
+          {
+            class: `folder-tab${active ? ' on' : ''}`,
+            attrs: { type: 'button', role: 'tab', 'aria-selected': active ? 'true' : 'false' },
+            title: `${label} · ${list.length} 个环境${running > 0 ? ` · ${running} 运行中` : ''}`,
+            on: { click: () => select(key) },
+          },
+          el('span', { class: 'folder-tab-icon', text: glyph }),
+          el('span', { class: 'folder-tab-name', text: label }),
+          el('span', { class: 'folder-tab-count', text: String(list.length) }),
+          running > 0 ? el('span', { class: 'folder-tab-live', text: String(running) }) : null,
+        ),
+      );
+    };
+    addTab(ALL, '全部环境', profiles, '▦');
+    for (const [folder, list] of ordered) addTab(folder, folder, list, '▤');
+
+    const panel = el('section', { class: 'folder-panel list-panel' });
+    panel.appendChild(
       el(
         'div',
-        { class: 'prow phead-row' },
-        el('span', { text: '环境' }),
-        el('span', { text: '平台' }),
-        el('span', { text: '状态' }),
-        el('span', { text: '代理' }),
-        el('span', { class: 'pcell-act', text: '操作' }),
+        { class: 'folder-panel-head' },
+        el(
+          'div',
+          { class: 'folder-panel-title' },
+          el('span', { class: 'folder-panel-icon', text: '📁' }),
+          el('span', { class: 'folder-panel-name', text: activeKey === ALL ? '全部环境' : activeKey }),
+          el('span', { class: 'folder-panel-count', text: `${activeList.length} 个环境` }),
+        ),
+        el('span', {
+          class: 'small muted',
+          text:
+            this.sortKey === 'manual'
+              ? activeKey === ALL
+                ? '切到文件夹标签后可拖拽排序'
+                : '手动排序：拖拽行调整顺序'
+              : '点表头排序',
+        }),
       ),
     );
-    for (const profile of profiles) table.appendChild(this.buildProfileRow(profile, showFolder));
-    return table;
+    panel.appendChild(this.buildProfileTable(activeList, activeKey === ALL, activeKey === ALL ? null : activeKey));
+
+    const shell = el('div', { class: 'folder-shell list-shell' });
+    shell.append(tabBar, panel);
+    this.consoleGrid.appendChild(shell);
   }
 
   private buildProfileGroups(profiles: Profile[]): void {
@@ -1844,63 +2436,118 @@ export class ShardXTabWorkspaceUI {
       if (b[0] === '未分类') return -1;
       return a[0].localeCompare(b[0], 'zh');
     });
+    if (ordered.length === 0) return;
+    this.folderProfiles = groups;
 
-    const board = el('div', { class: 'group-board' });
+    if (!this.activeFolder || !groups.has(this.activeFolder)) {
+      this.activeFolder = ordered[0][0];
+    }
+    const activeList = this.sortProfiles(groups.get(this.activeFolder) ?? []);
+    const activeRunning = activeList.filter((profile) => isRunning(profile) || this.router.owner(profile.id)).length;
+
+    const shell = el('div', { class: 'folder-shell' });
+    const tabBar = el('div', { class: 'folder-tabs', attrs: { role: 'tablist' } });
     for (const [folder, list] of ordered) {
       const running = list.filter((profile) => isRunning(profile) || this.router.owner(profile.id)).length;
-      const group = el('section', { class: 'tab-group' });
-      group.appendChild(
+      const active = folder === this.activeFolder;
+      tabBar.appendChild(
         el(
-          'div',
-          { class: 'tab-group-head' },
-          el('span', { class: 'tab-group-title' }, el('span', { class: 'tab-group-icon', text: '▤' }), el('span', { text: folder })),
-          el('span', { class: 'tab-group-count', text: `${list.length}` }),
-          running > 0 ? el('span', { class: 'tab-group-live', text: `${running} 运行中` }) : null,
+          'button',
+          {
+            class: `folder-tab${active ? ' on' : ''}`,
+            attrs: { type: 'button', role: 'tab', 'aria-selected': active ? 'true' : 'false' },
+            title: `${folder} · ${list.length} 个环境${running > 0 ? ` · ${running} 运行中` : ''}`,
+            on: {
+              click: () => {
+                if (this.activeFolder === folder) return;
+                this.activeFolder = folder;
+                this.renderProfiles();
+              },
+            },
+          },
+          el('span', { class: 'folder-tab-icon', text: '▤' }),
+          el('span', { class: 'folder-tab-name', text: folder }),
+          el('span', { class: 'folder-tab-count', text: String(list.length) }),
+          running > 0 ? el('span', { class: 'folder-tab-live', text: String(running) }) : null,
         ),
       );
-
-      const strip = el('div', { class: 'tab-group-strip' });
-      for (const profile of list) strip.appendChild(this.buildGroupTab(profile));
-      group.appendChild(strip);
-      board.appendChild(group);
     }
-    this.consoleGrid.appendChild(board);
-  }
 
-  private buildGroupTab(profile: Profile): HTMLElement {
-    const owner = this.router.owner(profile.id);
-    const running = isRunning(profile);
-    const proxy = this.findProxy(profile);
-    const platform = String(profile.platform ?? '').trim();
-    const meta = [platform, proxyText(proxy)].filter((part) => part && part !== '直连').join(' · ');
-    const tab = el('button', {
-      class: `group-tab${owner ? ' bound' : running ? ' running' : ''}`,
-      title: owner
-        ? `由会话 ${sessionTag(owner)} 独占，点击接管到当前会话`
-        : running
-          ? '已在运行，点击打开实例视图'
-          : '点击绑定到当前会话并启动',
-      props: { type: 'button' },
-    }) as HTMLButtonElement;
-    tab.append(
-      el('span', { class: `dot ${owner ? 'warn' : running ? 'ok' : 'muted'}` }),
+    const viewToggle = el('div', { class: 'folder-view-toggle' });
+    const views: Array<['cards' | 'list', string]> = [
+      ['cards', '卡片'],
+      ['list', '列表'],
+    ];
+    for (const [mode, label] of views) {
+      viewToggle.appendChild(
+        el('button', {
+          class: `folder-view-btn${this.folderView === mode ? ' on' : ''}`,
+          attrs: { type: 'button', 'aria-pressed': this.folderView === mode ? 'true' : 'false' },
+          text: label,
+          on: { click: () => this.setFolderView(mode) },
+        }),
+      );
+    }
+
+    const panel = el('section', { class: 'folder-panel' });
+    panel.appendChild(
       el(
-        'span',
-        { class: 'group-tab-body' },
-        el('span', { class: 'group-tab-name', text: profile.name || profile.id }),
-        el('span', { class: 'group-tab-meta', text: meta || shortId(profile.id) }),
+        'div',
+        { class: 'folder-panel-head' },
+        el(
+          'div',
+          { class: 'folder-panel-title' },
+          el('span', { class: 'folder-panel-icon', text: '📁' }),
+          el('span', { class: 'folder-panel-name', text: this.activeFolder }),
+          el('span', { class: 'folder-panel-count', text: `${activeList.length} 个环境` }),
+          activeRunning > 0 ? el('span', { class: 'folder-panel-live', text: `${activeRunning} 运行中` }) : null,
+        ),
+        viewToggle,
       ),
     );
-    if (owner) tab.appendChild(el('span', { class: 'group-tab-lock', text: `🔒 ${sessionTag(owner)}` }));
-    tab.addEventListener('click', () => void this.startProfileInSession(profile, this.sessionId, tab));
-    return tab;
+
+    if (this.folderView === 'list') {
+      panel.appendChild(this.buildProfileTable(activeList, false, this.activeFolder));
+    } else {
+      const cards = el('div', { class: 'folder-cards' });
+      for (const profile of activeList) cards.appendChild(this.buildProfileCard(profile, this.sortKey === 'manual' ? this.activeFolder : null));
+      panel.appendChild(cards);
+    }
+
+    shell.append(tabBar, panel);
+    this.consoleGrid.appendChild(shell);
   }
 
-  private buildProfileRow(profile: Profile, showFolder = true): HTMLElement {
+  private setFolderView(mode: 'cards' | 'list'): void {
+    if (this.folderView === mode) return;
+    this.folderView = mode;
+    try {
+      window.localStorage.setItem('shardx-folder-view', mode);
+    } catch {
+      /* storage may be unavailable; the in-memory choice still applies */
+    }
+    this.renderProfiles();
+  }
+
+  private buildProfileRow(
+    profile: Profile,
+    showFolder = true,
+    index = 0,
+    dragFolder: string | null | undefined = undefined,
+  ): HTMLElement {
     const proxy = this.findProxy(profile);
     const protocol = proxyProtocol(proxy);
     const owner = this.router.owner(profile.id);
+    const folder = dragFolder === undefined ? profileFolder(profile) : dragFolder;
+    const dragTarget = this.sortKey === 'manual' ? folder : null;
     const row = el('div', { class: `prow${owner ? ' bound' : ''}` });
+
+    const indexCell = el(
+      'div',
+      { class: 'pcell pindex' },
+      dragTarget ? el('span', { class: 'grip', text: '⋮⋮', title: '拖拽调整顺序' }) : null,
+      el('span', { class: 'pindex-num', text: String(index + 1).padStart(2, '0') }),
+    );
 
     const nameCell = el(
       'div',
@@ -1941,23 +2588,47 @@ export class ShardXTabWorkspaceUI {
     startBtn.addEventListener('click', () => void this.startProfileInSession(profile, this.sessionId, startBtn));
 
     const actions = el('div', { class: 'pcell pcell-act' }, startBtn);
-    if (owner === this.sessionId) {
-      actions.appendChild(
-        iconButton('stop', {
-          title: '停止实例并释放独占锁',
-          class: 'danger-icon',
-          onClick: () => void this.releaseProfile(profile),
-        }),
-      );
-    }
+    actions.append(
+      iconButton('stop', {
+        title:
+          owner === this.sessionId
+            ? '停止实例并释放独占锁'
+            : owner
+              ? `无法停止：会话 ${sessionTag(owner)} 正在独占`
+              : isRunning(profile)
+                ? '停止实例'
+                : '实例未运行',
+        class: 'danger-icon',
+        onClick: () => void this.stopProfile(profile),
+      }),
+      iconButton('restart', {
+        title: owner && owner !== this.sessionId ? `无法重启：会话 ${sessionTag(owner)} 正在独占` : '重启实例',
+        onClick: () => void this.restartProfile(profile),
+      }),
+      iconButton('settings', {
+        title: '编辑名称 / 分组 / 备注',
+        onClick: () => this.openProfileEditor(profile),
+      }),
+      iconButton('chart', {
+        title: '查看环境详情',
+        onClick: () => this.showProfileDetails(profile),
+      }),
+      iconButton('trash', {
+        title: owner && owner !== this.sessionId ? `无法删除：会话 ${sessionTag(owner)} 正在独占` : '删除环境',
+        class: 'danger-icon',
+        onClick: () => this.confirmDeleteProfile(profile),
+      }),
+    );
 
     row.append(
+      indexCell,
       nameCell,
       el('div', { class: 'pcell' }, badge(profileOs(profile), 'info')),
       statusCell,
       proxyCell,
       actions,
     );
+    this.attachProfileDrag(row, profile, dragTarget);
     return row;
   }
 
@@ -1967,7 +2638,7 @@ export class ShardXTabWorkspaceUI {
     return this.proxies.find((proxy) => str((proxy as any).id) === id) ?? null;
   }
 
-  private buildProfileCard(profile: Profile): HTMLElement {
+  private buildProfileCard(profile: Profile, dragFolder: string | null = null): HTMLElement {
     const proxy = this.findProxy(profile);
     const protocol = proxyProtocol(proxy);
     const boundOwner = this.router.owner(profile.id);
@@ -2022,7 +2693,7 @@ export class ShardXTabWorkspaceUI {
     addIf('噪音种子', profileNoise(profile));
     card.appendChild(kv);
 
-    const actions = el('div', { class: 'actions' });
+    const actions = el('div', { class: 'actions card-actions' });
     const knownSessions = new Set<string>([this.sessionId, ...this.router.sessionIds()]);
     if (boundOwner) knownSessions.add(boundOwner);
 
@@ -2055,21 +2726,301 @@ export class ShardXTabWorkspaceUI {
 
     actions.appendChild(startBtn);
 
-    if (boundOwner === this.sessionId) {
-      actions.appendChild(
-        iconButton('stop', {
-          title: '停止实例并释放独占锁',
-          class: 'danger-icon',
-          onClick: () => void this.releaseProfile(profile),
+    const tools = el('div', { class: 'card-tools' });
+    tools.append(
+      iconButton('stop', {
+        title:
+          boundOwner === this.sessionId
+            ? '停止实例并释放独占锁'
+            : boundOwner
+              ? `无法停止：会话 ${sessionTag(boundOwner)} 正在独占`
+              : isRunning(profile)
+                ? '停止实例'
+                : '实例未运行',
+        class: 'danger-icon',
+        onClick: () => void this.stopProfile(profile),
+      }),
+      iconButton('restart', {
+        title: boundOwner && boundOwner !== this.sessionId ? `无法重启：会话 ${sessionTag(boundOwner)} 正在独占` : '重启实例',
+        onClick: () => void this.restartProfile(profile),
+      }),
+      iconButton('settings', {
+        title: '编辑名称 / 分组 / 备注',
+        onClick: () => this.openProfileEditor(profile),
+      }),
+      iconButton('chart', {
+        title: '查看环境详情',
+        onClick: () => this.showProfileDetails(profile),
+      }),
+      iconButton('trash', {
+        title: boundOwner && boundOwner !== this.sessionId ? `无法删除：会话 ${sessionTag(boundOwner)} 正在独占` : '删除环境',
+        class: 'danger-icon',
+        onClick: () => this.confirmDeleteProfile(profile),
+      }),
+    );
+    actions.appendChild(tools);
+
+    card.appendChild(actions);
+    this.attachProfileDrag(card, profile, dragFolder);
+    return card;
+  }
+
+  private attachProfileDrag(item: HTMLElement, profile: Profile, folder: string | null): void {
+    item.draggable = Boolean(folder);
+    if (!folder) return;
+    const isCard = item.classList.contains('profile-card');
+    if (!isCard) item.classList.add('has-drag-grip');
+    item.addEventListener('dragstart', (event) => {
+      this.dragProfileId = profile.id;
+      item.classList.add('dragging');
+      item.closest('.ptable')?.classList.add('dragging-active');
+      item.closest('.folder-cards')?.classList.add('dragging-active');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', profile.id);
+      }
+    });
+    item.addEventListener('dragend', () => {
+      this.dragProfileId = null;
+      item.classList.remove('dragging');
+      item.closest('.ptable')?.classList.remove('dragging-active');
+      item.closest('.folder-cards')?.classList.remove('dragging-active');
+    });
+    if (isCard) return;
+    item.addEventListener('dragover', (event) => {
+      const source = this.dragProfileId;
+      if (!source || source === profile.id) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      item.classList.add('drop-target');
+    });
+    item.addEventListener('dragleave', () => item.classList.remove('drop-target'));
+    item.addEventListener('drop', (event) => {
+      event.preventDefault();
+      item.classList.remove('drop-target');
+      const source = this.dragProfileId;
+      this.dragProfileId = null;
+      if (source) this.reorderProfile(folder, source, profile.id);
+    });
+  }
+
+  private reorderProfile(folder: string, sourceId: string, targetId: string): void {
+    const list = this.folderProfiles.get(folder);
+    if (!list) return;
+    const ids = list.map((profile) => profile.id);
+    const from = ids.indexOf(sourceId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0 || from === to) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, sourceId);
+    this.saveProfileOrder(folder, ids);
+    this.renderProfiles();
+  }
+
+  private saveProfileOrder(folder: string, ids: string[]): void {
+    try {
+      const raw = window.localStorage.getItem('shardx-profile-order');
+      const all = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+      all[folder] = ids;
+      window.localStorage.setItem('shardx-profile-order', JSON.stringify(all));
+    } catch {
+      /* storage may be unavailable; the in-memory refresh already shows the new order */
+    }
+  }
+
+  private async stopProfile(profile: Profile): Promise<void> {
+    const owner = this.router.owner(profile.id);
+    if (owner) {
+      if (owner === this.sessionId) {
+        await this.releaseProfile(profile);
+        return;
+      }
+      toast(`无法停止：「${profile.name || profile.id}」由会话 ${sessionTag(owner)} 独占`, 'error', 5000);
+      return;
+    }
+    if (!isRunning(profile)) {
+      toast(`「${profile.name || profile.id}」当前未运行`, 'info', 2200);
+      return;
+    }
+    try {
+      await this.api.stopProfile(profile.id);
+      toast(`已停止「${profile.name || profile.id}」`, 'success');
+      void this.refreshAll(true);
+    } catch (error) {
+      toast(`停止失败：${error instanceof Error ? error.message : String(error)}`, 'error', 6000);
+    }
+  }
+
+  private async restartProfile(profile: Profile): Promise<void> {
+    const owner = this.router.owner(profile.id);
+    if (owner && owner !== this.sessionId) {
+      toast(`无法重启：「${profile.name || profile.id}」由会话 ${sessionTag(owner)} 独占`, 'error', 5000);
+      return;
+    }
+    if (owner === this.sessionId) {
+      await this.releaseProfile(profile);
+      await this.startProfileInSession(profile, this.sessionId);
+      return;
+    }
+    if (isRunning(profile)) {
+      try {
+        await this.api.stopProfile(profile.id);
+      } catch (error) {
+        toast(`重启失败：${error instanceof Error ? error.message : String(error)}`, 'error', 6000);
+        return;
+      }
+    }
+    await this.startProfileInSession(profile, this.sessionId);
+  }
+
+  private openProfileEditor(profile: Profile): void {
+    const nameInput = el('input', {
+      class: 'input',
+      attrs: { type: 'text', value: profile.name || '', placeholder: '环境名称' },
+    }) as HTMLInputElement;
+    const folderInput = el('input', {
+      class: 'input',
+      attrs: { type: 'text', value: String((profile as any).folder ?? ''), placeholder: '如 Google、新账号' },
+    }) as HTMLInputElement;
+    const notesInput = el('textarea', {
+      class: 'input',
+      attrs: { rows: '3', placeholder: '备注（可选）' },
+    }) as HTMLTextAreaElement;
+    notesInput.value = String((profile as any).notes ?? '');
+
+    const folders = [...this.folderProfiles.keys()].filter((name) => name !== '未分类');
+    const chips = el('div', { class: 'folder-chips' });
+    for (const name of folders) {
+      chips.appendChild(
+        el('button', {
+          class: 'chip',
+          attrs: { type: 'button' },
+          text: name,
+          on: { click: () => { folderInput.value = name; } },
         }),
       );
     }
 
-    card.appendChild(actions);
-    return card;
+    const form = el(
+      'div',
+      { class: 'form' },
+      el('label', { class: 'field' }, el('span', { text: '名称' }), nameInput),
+      el('label', { class: 'field' }, el('span', { text: '分组' }), folderInput, folders.length > 0 ? chips : null),
+      el('label', { class: 'field' }, el('span', { text: '备注' }), notesInput),
+      el('p', { class: 'small', text: '修改会写回 ShardX profile，并同步到分组与列表。' }),
+    );
+
+    const cancel = button('取消', { class: 'btn', onClick: () => overlay.remove() });
+    const save = button('保存修改', {
+      class: 'btn primary',
+      icon: 'check',
+      onClick: () => {
+        const name = nameInput.value.trim();
+        if (!name) {
+          toast('名称不能为空', 'error');
+          nameInput.focus();
+          return;
+        }
+        save.disabled = true;
+        void this.api
+          .updateProfile(profile.id, { name, folder: folderInput.value.trim(), notes: notesInput.value.trim() })
+          .then(() => {
+            overlay.remove();
+            toast('已保存环境信息', 'success');
+            void this.refreshAll(true);
+          })
+          .catch((error) => {
+            save.disabled = false;
+            toast(`保存失败：${error instanceof Error ? error.message : String(error)}`, 'error', 7000);
+          });
+      },
+    });
+
+    const overlay = this.openModal(`编辑环境 · ${profile.name || profile.id}`, form, [cancel, save]);
+    window.setTimeout(() => nameInput.focus(), 0);
   }
 
-  private async startProfileInSession(profile: Profile, sessionId: string, trigger: HTMLButtonElement): Promise<void> {
+  private showProfileDetails(profile: Profile): void {
+    const proxy = this.findProxy(profile);
+    const owner = this.router.owner(profile.id);
+    const rows: Array<[string, string]> = [
+      ['环境 ID', profile.id],
+      ['名称', profile.name || '—'],
+      ['分组', String((profile as any).folder ?? '') || '未分类'],
+      ['平台', profileOs(profile)],
+      ['状态', owner ? `会话 ${sessionTag(owner)} 独占` : isRunning(profile) ? '运行中' : '已停止'],
+      ['代理', proxyText(proxy)],
+      ['内核', profileKernel(profile)],
+      ['CPU', profileCpu(profile)],
+      ['内存', profileMemory(profile)],
+      ['时区', profileTimezone(profile)],
+      ['噪音种子', profileNoise(profile)],
+      ['备注', String((profile as any).notes ?? '') || '—'],
+    ];
+    const list = el('div', { class: 'detail-list' });
+    for (const [key, value] of rows) {
+      list.append(el('span', { class: 'k', text: key }), el('span', { class: 'v', text: value }));
+    }
+    const copy = button('复制 ID', {
+      class: 'btn small',
+      icon: 'copy',
+      onClick: () => {
+        void navigator.clipboard
+          .writeText(profile.id)
+          .then(() => toast('已复制环境 ID', 'success'))
+          .catch(() => toast('复制失败：剪贴板不可用', 'error'));
+      },
+    });
+    const close = button('关闭', { class: 'btn', onClick: () => overlay.remove() });
+    const overlay = this.openModal(`环境详情 · ${profile.name || profile.id}`, list, [copy, close]);
+  }
+
+  private confirmDeleteProfile(profile: Profile): void {
+    const owner = this.router.owner(profile.id);
+    const body = el(
+      'div',
+      { class: 'form' },
+      el('p', {
+        class: 'small',
+        text: `确定要删除「${profile.name || profile.id}」吗？该操作会移除 ShardX 指纹环境及其本地数据，无法撤销。`,
+      }),
+      owner ? el('p', { class: 'small err', text: `当前由会话 ${sessionTag(owner)} 使用，删除会先停止实例。` }) : null,
+    );
+    const cancel = button('取消', { class: 'btn', onClick: () => overlay.remove() });
+    const del = button('删除', {
+      class: 'btn danger',
+      icon: 'trash',
+      onClick: () => {
+        del.disabled = true;
+        void this.deleteProfile(profile, overlay).catch(() => {
+          del.disabled = false;
+        });
+      },
+    });
+    const overlay = this.openModal(`删除环境 · ${profile.name || profile.id}`, body, [cancel, del]);
+  }
+
+  private async deleteProfile(profile: Profile, overlay?: HTMLElement | null): Promise<void> {
+    const owner = this.router.owner(profile.id);
+    if (owner && owner !== this.sessionId) {
+      toast(`无法删除：「${profile.name || profile.id}」由会话 ${sessionTag(owner)} 独占`, 'error', 6000);
+      return;
+    }
+    try {
+      if (owner === this.sessionId) await this.releaseProfile(profile);
+      else if (isRunning(profile)) await this.api.stopProfile(profile.id);
+      await this.api.deleteProfile(profile.id);
+      this.closeTab(`instance:${profile.id}`, true);
+      overlay?.remove();
+      toast(`已删除「${profile.name || profile.id}」`, 'success');
+      void this.refreshAll(true);
+    } catch (error) {
+      toast(`删除失败：${error instanceof Error ? error.message : String(error)}`, 'error', 8000);
+      throw error;
+    }
+  }
+
+  private async startProfileInSession(profile: Profile, sessionId: string, trigger?: HTMLButtonElement): Promise<void> {
     const existing = this.tabs.get(`instance:${profile.id}`);
     if (existing) {
       const sandbox = this.router.getByProfile(profile.id);
@@ -2081,12 +3032,15 @@ export class ShardXTabWorkspaceUI {
       this.activateTab(existing.id);
       return;
     }
-    trigger.disabled = true;
-    const labelNode = trigger.querySelector('span:last-child');
-    const original = labelNode?.textContent ?? trigger.textContent;
-    if (labelNode) labelNode.textContent = '启动中…';
+    let original = '启动';
+    if (trigger) {
+      trigger.disabled = true;
+      const labelNode = trigger.querySelector('span:last-child');
+      original = labelNode?.textContent ?? trigger.textContent ?? original;
+      if (labelNode) labelNode.textContent = '启动中…';
+    }
     try {
-      const sandbox = await this.bridge.startSessionProfile(sessionId, profile.id, profile.name || profile.id);
+      const sandbox = await this.attachOrStart(profile, sessionId);
       this.router.patch(profile.id, { targets: [] });
       this.openInstanceTab(sandbox, profile);
       toast(`已在会话 ${sessionTag(sessionId)} 启动「${profile.name || profile.id}」`, 'success');
@@ -2096,9 +3050,11 @@ export class ShardXTabWorkspaceUI {
       toast(`启动失败：${message}`, 'error', 7000);
       console.error('[ShardX] 启动失败', error);
     } finally {
-      trigger.disabled = false;
-      const label = trigger.querySelector('span:last-child');
-      if (label) label.textContent = original ?? '启动';
+      if (trigger) {
+        trigger.disabled = false;
+        const label = trigger.querySelector('span:last-child');
+        if (label) label.textContent = original;
+      }
     }
   }
 
@@ -2780,7 +3736,7 @@ export class ShardXTabWorkspaceUI {
   // ------------------------------------------------------------------
   // Dialogs
   // ------------------------------------------------------------------
-  private openModal(title: string, body: HTMLElement): void {
+  private openModal(title: string, body: HTMLElement, actions: HTMLElement[] = []): HTMLElement {
     const overlay = el('div', { class: 'modal-overlay' });
     const box = el('div', { class: 'modal' });
     const head = el('div', { class: 'modal-head' });
@@ -2789,6 +3745,11 @@ export class ShardXTabWorkspaceUI {
       iconButton('close', { title: '关闭', onClick: () => overlay.remove() }),
     );
     box.append(head, el('div', { class: 'modal-body' }, body));
+    if (actions.length > 0) {
+      const footer = el('div', { class: 'modal-actions' });
+      for (const action of actions) footer.appendChild(action);
+      box.appendChild(footer);
+    }
     overlay.appendChild(box);
     overlay.addEventListener('click', (event) => {
       if (event.target === overlay) overlay.remove();
@@ -2797,6 +3758,7 @@ export class ShardXTabWorkspaceUI {
       if (event.key === 'Escape') overlay.remove();
     });
     this.container.appendChild(overlay);
+    return overlay;
   }
 
   private openSettings(): void {

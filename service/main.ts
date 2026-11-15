@@ -10,7 +10,7 @@
  */
 import { createServer } from 'node:http';
 import { createHmac, randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -485,6 +485,200 @@ async function handleWorkspaceStateRoute(): Promise<{ status: number; payload: a
   };
 }
 
+function splitArgs(raw: string): string[] {
+  const out: string[] = [];
+  let current = '';
+  let quote = '';
+  for (const ch of raw) {
+    if (quote) {
+      if (ch === quote) quote = '';
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        out.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+/**
+ * Every browser the launcher starts needs an open DevTools port, otherwise a
+ * profile launched from the launcher's own window cannot be attached to a
+ * workspace tab. `extra_args` is the launcher's global Chromium argument list,
+ * so adding the two flags there covers UI starts as well as API starts.
+ */
+function ensureLauncherDebugArgs(): {
+  changed: boolean;
+  extraArgs: string;
+  settingsPath: string;
+  error?: string;
+} {
+  const settingsPath = shardxSettingsPath();
+  if (!settingsPath) return { changed: false, extraArgs: '', settingsPath, error: 'APPDATA 不可用' };
+  let settings: Record<string, any>;
+  try {
+    settings = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, any>;
+  } catch (error) {
+    return {
+      changed: false,
+      extraArgs: '',
+      settingsPath,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const args = splitArgs(String(settings.extra_args ?? ''));
+  let changed = false;
+  if (!args.some((arg) => arg === '--remote-allow-origins=*')) {
+    args.push('--remote-allow-origins=*');
+    changed = true;
+  }
+  if (!args.some((arg) => arg === '--remote-debugging-port' || arg.startsWith('--remote-debugging-port='))) {
+    args.unshift('--remote-debugging-port=0');
+    changed = true;
+  }
+  const extraArgs = args.join(' ');
+  if (changed) {
+    settings.extra_args = extraArgs;
+    try {
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      const temp = `${settingsPath}.tmp-${randomBytes(4).toString('hex')}`;
+      writeFileSync(temp, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+      renameSync(temp, settingsPath);
+    } catch (error) {
+      return {
+        changed: false,
+        extraArgs,
+        settingsPath,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  return { changed, extraArgs, settingsPath };
+}
+
+function readDevToolsActivePort(
+  dataRoot: string,
+  profileId: string,
+): { port: number; path: string } | null {
+  if (!dataRoot || !profileId) return null;
+  const file = join(dataRoot, 'user-data', profileId, 'DevToolsActivePort');
+  try {
+    const lines = readFileSync(file, 'utf8')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const port = Number(lines[0]);
+    const path = lines[1] ?? '';
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    if (!path.startsWith('/devtools/')) return null;
+    return { port, path };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `/running` from the launcher only carries a CDP websocket for browsers it
+ * started itself. Browsers opened from the launcher window still write
+ * DevToolsActivePort into their user-data directory; read it here so the panel
+ * can attach to those instances too.
+ */
+async function handleInstancesRunning(): Promise<{ status: number; payload: any }> {
+  const discovered = await handleDiscover();
+  const data = discovered.payload ?? {};
+  if (!data.found) return { status: 200, payload: { ...data, profiles: [] } };
+  if (!data.running) {
+    return { status: 409, payload: { ...data, code: 'NOT_RUNNING', error: 'ShardX 未运行', profiles: [] } };
+  }
+  const base = `http://127.0.0.1:${Math.trunc(Number(data.port) || 40325)}`;
+  const headers = { authorization: `Bearer ${String(data.token ?? '')}` };
+  let raw: any;
+  try {
+    const response = await fetch(`${base}/running`, { headers, signal: AbortSignal.timeout(6000) });
+    if (!response.ok) {
+      return { status: 502, payload: { error: `/running 返回 HTTP ${response.status}`, profiles: [] } };
+    }
+    raw = await response.json();
+  } catch (error) {
+    return {
+      status: 502,
+      payload: { error: error instanceof Error ? error.message : String(error), profiles: [] },
+    };
+  }
+  const list = asArray(raw);
+  const dataRoot = String(data.dataRoot ?? '');
+  let enriched = 0;
+  const profiles = list.map((item: any) => {
+    if (!item || typeof item !== 'object') return item;
+    const profileId = text(item.profile_id ?? item.profileId ?? item.id, 200);
+    if (!profileId) return item;
+    const cdp = item.cdp && typeof item.cdp === 'object' ? item.cdp : {};
+    const hasWs = Boolean(cdp.web_socket_debugger_url || cdp.webSocketDebuggerUrl || item.web_socket_debugger_url);
+    if (hasWs) return { ...item, profile_id: profileId };
+    const active = readDevToolsActivePort(dataRoot, profileId);
+    if (!active) return { ...item, profile_id: profileId, cdp };
+    enriched += 1;
+    return {
+      ...item,
+      profile_id: profileId,
+      cdp: {
+        port: active.port,
+        http_url: `http://127.0.0.1:${active.port}`,
+        web_socket_debugger_url: `ws://127.0.0.1:${active.port}${active.path}`,
+      },
+    };
+  });
+  return {
+    status: 200,
+    payload: {
+      profiles,
+      enriched,
+      dataRoot,
+      port: data.port,
+      attachable: profiles.filter((item: any) => Boolean(item?.cdp?.web_socket_debugger_url)).length,
+      source: '/instances/running',
+    },
+  };
+}
+
+async function handleLauncherSettings(body: Record<string, any>): Promise<{ status: number; payload: any }> {
+  const ensure = body.ensure_debug === true;
+  const result = ensure
+    ? ensureLauncherDebugArgs()
+    : (() => {
+        const settingsPath = shardxSettingsPath();
+        let extraArgs = '';
+        try {
+          const settings = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, any>;
+          extraArgs = String(settings.extra_args ?? '');
+        } catch {
+          extraArgs = '';
+        }
+        return { changed: false, extraArgs, settingsPath, error: undefined as string | undefined };
+      })();
+  return {
+    status: result.error ? 500 : 200,
+    payload: {
+      ...result,
+      debugEnabled:
+        result.extraArgs.includes('--remote-debugging-port') &&
+        result.extraArgs.includes('--remote-allow-origins=*'),
+    },
+  };
+}
+
+
 async function handleMapping(body: Record<string, any>): Promise<{ status: number; payload: any }> {
   const profileId = text(body.profile_id, 200);
   if (!profileId) return { status: 400, payload: { error: 'profile_id 不能为空', code: 'BAD_PROFILE' } };
@@ -596,6 +790,61 @@ async function listLauncherProcesses(pathHint = ''): Promise<LauncherProcess[]> 
   }
 }
 
+/**
+ * Places the launcher is normally installed to. `resolveLauncherPath` falls back
+ * to these so an automatic restart does not need a manual path on every reload.
+ */
+function launcherCandidates(): string[] {
+  const out: string[] = [];
+  const envPath = String(process.env.SHARDX_LAUNCHER_PATH ?? '').trim();
+  if (envPath) out.push(envPath);
+  const local = String(process.env.LOCALAPPDATA ?? '').trim();
+  const roaming = String(process.env.APPDATA ?? '').trim();
+  const programFiles = String(process.env.ProgramFiles ?? '').trim();
+  const programFiles86 = String(process.env['ProgramFiles(x86)'] ?? '').trim();
+  if (local) {
+    out.push(join(local, 'Programs', 'ShardBrowser', 'ShardBrowser-Launcher.exe'));
+    out.push(join(local, 'Programs', 'ShardBrowser-Launcher', 'ShardBrowser-Launcher.exe'));
+    out.push(join(local, 'Programs', 'shardx', 'ShardBrowser-Launcher.exe'));
+    out.push(join(local, 'ShardX', 'ShardBrowser-Launcher.exe'));
+  }
+  if (roaming) out.push(join(roaming, 'ShardBrowser', 'ShardBrowser-Launcher.exe'));
+  if (programFiles) out.push(join(programFiles, 'ShardBrowser', 'ShardBrowser-Launcher.exe'));
+  if (programFiles86) out.push(join(programFiles86, 'ShardBrowser', 'ShardBrowser-Launcher.exe'));
+  return out;
+}
+
+/**
+ * Pick the launcher executable: an explicit hint wins, then the remembered
+ * path, then common install locations. Running processes are handled by the
+ * caller because it already has to enumerate them.
+ */
+function resolveLauncherPath(pathHint: string, processes: LauncherProcess[] = []): string {
+  const hint = String(pathHint ?? '').trim();
+  if (hint) return hint;
+  for (const item of processes) {
+    if (item.path) return item.path;
+  }
+  for (const candidate of launcherCandidates()) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return '';
+}
+
+/** Remember where the launcher lives so the next start needs no path at all. */
+function persistLauncherPath(path: string): void {
+  const clean = String(path ?? '').trim();
+  if (!clean) return;
+  try {
+    const state = readWorkspaceState();
+    if (state.settings.launcher_path === clean) return;
+    state.settings.launcher_path = clean;
+    writeWorkspaceState(state);
+  } catch {
+    /* state persistence is best effort */
+  }
+}
+
 async function killPid(pid: number): Promise<void> {
   try {
     process.kill(pid);
@@ -635,13 +884,119 @@ async function waitForHealth(port: number, wantRunning: boolean, timeoutMs: numb
   return false;
 }
 
+/**
+ * The launcher is a Tauri app hosting a WebView2 window. That window can be
+ * mirrored over CDP only when WebView2 was started with a debugging port, so
+ * every launcher start performed by this extension injects one. `mirrorPort()`
+ * is the port we inject; `mirrorCandidatePorts()` also accepts a port the user
+ * put in WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS himself.
+ */
+function mirrorPort(): number {
+  const raw = Number(process.env.SHARDX_MIRROR_PORT);
+  return Number.isFinite(raw) && raw >= 1 && raw <= 65535 ? Math.trunc(raw) : 40326;
+}
+
+function mirrorBrowserArgs(): string {
+  const existing = String(process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? '').trim();
+  if (existing.includes('--remote-debugging-port')) return existing;
+  const args = `--remote-debugging-port=${mirrorPort()} --remote-allow-origins=*`;
+  return existing ? `${existing} ${args}` : args;
+}
+
+type LauncherTarget = {
+  id: string;
+  title: string;
+  url: string;
+  webSocketDebuggerUrl: string;
+};
+
+function mirrorCandidatePorts(): number[] {
+  const ports = new Set<number>();
+  const explicit = Number(process.env.SHARDX_MIRROR_PORT);
+  if (Number.isFinite(explicit) && explicit > 0) ports.add(Math.trunc(explicit));
+  const extra = String(process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? '');
+  for (const match of extra.matchAll(/--remote-debugging-port=(\d+)/g)) {
+    const port = Number(match[1]);
+    if (Number.isFinite(port) && port > 0) ports.add(Math.trunc(port));
+  }
+  ports.add(40326);
+  ports.add(9333);
+  ports.add(9222);
+  ports.add(9223);
+  return [...ports];
+}
+
+async function probeMirrorPort(
+  port: number,
+): Promise<{ port: number; targets: LauncherTarget[] } | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${Math.trunc(port)}/json/list`, {
+      signal: AbortSignal.timeout(1200),
+    });
+    if (!response.ok) return null;
+    const raw = await response.json().catch(() => null);
+    if (!Array.isArray(raw)) return null;
+    const targets: LauncherTarget[] = [];
+    for (const item of raw) {
+      const candidate = item as Record<string, unknown>;
+      if (String(candidate.type ?? '') !== 'page') continue;
+      const webSocketDebuggerUrl = String(candidate.webSocketDebuggerUrl ?? '').trim();
+      if (!webSocketDebuggerUrl) continue;
+      targets.push({
+        id: String(candidate.id ?? ''),
+        title: String(candidate.title ?? ''),
+        url: String(candidate.url ?? ''),
+        webSocketDebuggerUrl,
+      });
+    }
+    return targets.length > 0 ? { port: Math.trunc(port), targets } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function handleLauncherStatus(): Promise<{ status: number; payload: any }> {
+  const ports = mirrorCandidatePorts();
+  const results = await Promise.all(ports.map((port) => probeMirrorPort(port)));
+  const hit = results.find(
+    (item): item is { port: number; targets: LauncherTarget[] } => item !== null,
+  );
+  if (hit) {
+    return {
+      status: 200,
+      payload: {
+        found: true,
+        cdpPort: hit.port,
+        targets: hit.targets,
+        ports,
+        injectedArguments: mirrorBrowserArgs(),
+      },
+    };
+  }
+  return {
+    status: 200,
+    payload: {
+      found: false,
+      cdpPort: null,
+      targets: [],
+      ports,
+      injectedArguments: mirrorBrowserArgs(),
+      hint: 'ShardX 启动器当前没有开放 WebView2 调试端口。点击「重启并启用镜像」由扩展带调试参数重新拉起启动器。',
+    },
+  };
+}
+
 async function handleServerStatus(): Promise<{ status: number; payload: any }> {
   const discovered = await handleDiscover();
   const data = discovered.payload ?? {};
   const state = readWorkspaceState();
   let launcherPath = state.settings.launcher_path;
   const processes = await listLauncherProcesses();
-  if (!launcherPath && processes[0]?.path) launcherPath = processes[0].path;
+  if (!launcherPath) {
+    launcherPath = resolveLauncherPath('', processes);
+    if (launcherPath) persistLauncherPath(launcherPath);
+  }
+  const mirror = await handleLauncherStatus();
   return {
     status: 200,
     payload: {
@@ -649,6 +1004,7 @@ async function handleServerStatus(): Promise<{ status: number; payload: any }> {
       launcherPath,
       processes,
       statePath: workspaceStatePath(),
+      mirror: mirror.payload,
     },
   };
 }
@@ -673,7 +1029,7 @@ async function handleServerControl(body: Record<string, any>): Promise<{ status:
     const already = await waitForHealth(port, true, 1200);
     if (!already) {
       const processes = await listLauncherProcesses(pathHint);
-      let launcherPath = pathHint || processes[0]?.path || '';
+      let launcherPath = resolveLauncherPath(pathHint || state.settings.launcher_path, processes);
       if (!launcherPath) {
         return {
           status: 400,
@@ -686,7 +1042,14 @@ async function handleServerControl(body: Record<string, any>): Promise<{ status:
         };
       }
       try {
-        const child = spawn(launcherPath, [], { detached: true, stdio: 'ignore', windowsHide: false });
+        persistLauncherPath(launcherPath);
+        ensureLauncherDebugArgs();
+        const child = spawn(launcherPath, [], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: false,
+          env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: mirrorBrowserArgs() },
+        });
         child.unref();
       } catch (error) {
         return {
@@ -713,6 +1076,7 @@ async function handleServerControl(body: Record<string, any>): Promise<{ status:
 
   const after = await handleDiscover();
   const processes = await listLauncherProcesses(pathHint);
+  const mirror = await handleLauncherStatus();
   return {
     status: 200,
     payload: {
@@ -720,6 +1084,7 @@ async function handleServerControl(body: Record<string, any>): Promise<{ status:
       ...after.payload,
       launcherPath: pathHint || processes[0]?.path || '',
       processes,
+      mirror: mirror.payload,
     },
   };
 }
@@ -873,6 +1238,27 @@ async function route(req: any, res: any): Promise<void> {
       return;
     }
     const result = await handleDiscover();
+    json(res, result.status, result.payload);
+    return;
+  }
+
+  if (url.pathname === '/instances/running') {
+    if (method !== 'POST' && method !== 'GET') {
+      json(res, 405, { error: 'method not allowed' });
+      return;
+    }
+    const result = await handleInstancesRunning();
+    json(res, result.status, result.payload);
+    return;
+  }
+
+  if (url.pathname === '/launcher/settings') {
+    if (method !== 'POST' && method !== 'GET') {
+      json(res, 405, { error: 'method not allowed' });
+      return;
+    }
+    const body = method === 'POST' ? await readJson(req) : {};
+    const result = await handleLauncherSettings(body);
     json(res, result.status, result.payload);
     return;
   }
@@ -1049,6 +1435,16 @@ async function route(req: any, res: any): Promise<void> {
       return;
     }
     const result = await handleWorkspaceSettings(await readJson(req));
+    json(res, result.status, result.payload);
+    return;
+  }
+
+  if (url.pathname === '/launcher/status') {
+    if (method !== 'POST' && method !== 'GET') {
+      json(res, 405, { error: 'method not allowed' });
+      return;
+    }
+    const result = await handleLauncherStatus();
     json(res, result.status, result.payload);
     return;
   }

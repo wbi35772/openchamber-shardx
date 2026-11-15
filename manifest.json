@@ -1,6 +1,6 @@
 {
   "name": "shardx",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "ShardX fingerprint-browser workspace tools exposed over MCP (stdio): folder/profile management, isolated sessions, shared mappings, reusable skills, and launcher control.",
   "transport": "stdio",
   "tools": [
