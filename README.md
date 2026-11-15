@@ -317,6 +317,8 @@ bunx openchamber-guest-bundle preview/preview.ts preview/preview.js
 | [HANDOFF.md](HANDOFF.md) | 逐轮开发记录与真实验证证据 |
 | [docs/canvas/](docs/canvas/) | 可视化项目图鉴源码与截图 |
 
+图鉴是单文件页面，直接用浏览器打开 [`docs/canvas/index.html`](docs/canvas/index.html) 即可；托管版发布在 Canvas 工件里（更新流程见 `docs/OPERATIONS.md` 第 9 节）。
+
 ## License
 
 MIT
