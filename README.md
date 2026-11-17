@@ -1,118 +1,108 @@
-# ShardX Workspace for OpenChamber
+# ShardX Matrix · OpenChamber 扩展 v2
 
-> 把 ShardX 指纹浏览器变成 OpenChamber 里的多会话工作台：每个会话独占一个指纹实例，
-> 以浏览器标签页的方式并行工作，同时把 32 个 MCP 工具交给 Agent 调度。
+把 250 个指纹浏览器槽位收进一张固定矩阵：槽位 `slot-001..slot-250` 永远对应出口端口
+`24001-24250`，启动时向 egress 总线取租约、把 ShardX Profile 的代理 / 时区 / 语言对齐到
+出口国家，再用 CDP 接管已经跑起来的浏览器。面板负责编排，Agent 通过 5 个 MCP 工具做同样的
+事。
 
-[![version](https://img.shields.io/badge/version-1.4.0-38bdf8?style=flat-square)](CHANGELOG.md)
-[![MCP tools](https://img.shields.io/badge/MCP%20tools-32-22c55e?style=flat-square)](docs/MCP-TOOLS.md)
-[![runtime deps](https://img.shields.io/badge/runtime%20deps-0-f59e0b?style=flat-square)](#技术约束)
-[![private](https://img.shields.io/badge/repository-private-8b5cf6?style=flat-square)](https://github.com/wbi35772/openchamber-shardx)
+- 扩展 ID：`shardx-matrix`（面板、服务、总线、工具统一使用这个 ID）
+- 宿主要求：OpenChamber ≥ 2.5.0，扩展 API v2
+- 运行时：Node ≥ 20，零运行时依赖；`playwright-core` 可选，仅用于非 ShardX 浏览器的调试
+- 平台：Windows（ShardX 启动器）+ WSL2 宿主（自动发现 Windows 侧 `%APPDATA%`）
 
-![主界面镜像](docs/canvas/assets/panel-mirror.png)
-
----
-
-## 目录
-
-- [它解决什么问题](#它解决什么问题)
-- [功能地图](#功能地图)
-- [界面速览](#界面速览)
-- [快速开始](#快速开始)
-- [MCP 工具](#mcp-工具)
-- [架构](#架构)
-- [目录结构](#目录结构)
-- [开发](#开发)
-- [关键设计](#关键设计)
-- [路线图](#路线图)
-- [文档索引](#文档索引)
-
----
-
-## 它解决什么问题
-
-ShardX 提供了带独立指纹、代理、Cookie 的浏览器环境，但同一时间只能盯着一个窗口。
-OpenChamber 的多个会话又天然需要并行：一个在跑登录流程、一个在抓数据、一个在核对页面。
-
-这个扩展把两者接起来：
-
-- **会话级隔离**：`session_id ↔ profileId` 强绑定，profile 独占锁，两个会话不会抢同一个实例。
-- **一个会话多个实例**：同一会话可以同时持有多个 profile，用 `profile_id` 指定操作目标。
-- **浏览器式工作台**：固定控制台标签 + 每个实例一条标签，`instance:<profileId>` 作键；关闭标签不停止实例。
-- **Agent 可接管**：面板和 MCP 共用同一份 `state.json`，Agent 绑定的实例会直接出现在面板标签栏。
-- **零第三方运行时依赖**：面板原生，服务只用 Node 内置模块 + 手写 WebSocket，MCP 也是零依赖。
-
-## 功能地图
+## 1. 它能做什么
 
 | 能力 | 说明 |
 |---|---|
-| 主界面镜像 | 环境页默认把 ShardX 启动器 WebView2 主界面镜像进面板，截图流 + 鼠标/键盘/滚轮/粘贴/IME 全量转发，随容器尺寸自适应铺满 |
-| 本地列表 | 卡片 / 列表 / 标签组三种视图；列表自带文件夹标签（全部环境 + 各分组），表头单击/双击排序、9 种排序字段、升降序 |
-| 实例标签 | 地址栏、前进/后退/刷新、实时视口、`Target.getTargets` 子标签、点击/键盘转发、检查器与 CDP 日志 |
-| 运行中接管 | 启动器窗口启动的实例自动补读 `DevToolsActivePort` 并后台开标签；旧实例可一键「接管 N 个运行实例」 |
-| 会话映射 | 面板内查看/编辑 `session → profile` 映射，与 Agent 的 MCP 调用共享 |
-| Skill 自动化 | 按网站沉淀操作步骤（navigate / click / type / wait / evaluate…），分配给实例或文件夹，支持批量执行 |
-| 服务器管理 | 启动/停止/重启 ShardX 启动器、探测端口与版本、同步分组/环境/代理/运行实例、自动注入调试参数 |
-| 连接自愈 | 每 20s 重新发现启动器；未运行时自动启动（30s 冷却），启动器路径自动解析并落盘 |
-| 32 个 MCP 工具 | 环境、页面、分组、代理、指纹、Skill、状态、服务器全链路；真实 E2E 验证 |
+| 250 个固定槽位 | `slot-NNN` ↔ `127.0.0.1:240NN` 一一对应，端口数学集中在 `core/contract.js` |
+| egress 租约对齐 | 启动前向 `127.0.0.1:19880` 取租约，失败即拒绝启动（`requireEgressLease`） |
+| 出口身份对齐 | 自动创建 / 复用槽位代理，按出口国家写时区、locale、`webrtc=proxy` |
+| CDP 接管 | 已运行的 Profile 直接接管；未运行才启动，统一走 `waitForCdp` |
+| 换血冻结屏障 | 收到 `PRE_ROTATION_FREEZE` 立即 `ACK_FREEZE`，动作等待 `POST_ROTATION_RESUME` |
+| 人类化动作 | 动作间泊松延迟 400–1800ms，任务逐步记录日志 |
+| 语义观测 | 返回 URL、标题、可见文本、ARIA 树和稳定的 `e1..eN` 元素引用 |
+| 加密凭据 | Cookie 等凭据用 AES-256-GCM 落盘，密钥在状态目录 `secret.key` |
+| 面板 + 5 MCP 工具 | 面板 250 宫格、筛选、抽屉动作流；Agent 用同一套 REST 能力 |
+| 单实例编排 | 服务端唯一编排器，面板 / MCP 都只是 `127.0.0.1:19884` 的客户端 |
 
-## 界面速览
+## 2. 架构
 
-| 卡片视图 | 本地列表 + 文件夹标签 |
-|---|---|
-| ![卡片](docs/canvas/assets/panel-cards.png) | ![列表](docs/canvas/assets/panel-list.png) |
+```mermaid
+flowchart LR
+  subgraph OC["OpenChamber 宿主"]
+    Panel["面板 iframe<br/>250 宫格 / 抽屉 / 动作流"]
+    Agent["Agent / MCP 客户端"]
+  end
 
-| 标签组视图 | 实例视图 |
-|---|---|
-| ![标签组](docs/canvas/assets/panel-groups.png) | ![实例](docs/canvas/assets/panel-instance.png) |
+  subgraph Ext["shardx-matrix (本扩展)"]
+    Svc["service/main.js<br/>HTTP + WS :19884"]
+    Hub["lib/ws.js<br/>/api/v1/shardx/ws"]
+    Store[("状态目录<br/>matrix-state.json<br/>credentials.json")]
+    Mcp["mcp/server.js<br/>stdio 或 SSE :19885"]
+  end
 
-| 会话映射 | Skill |
-|---|---|
-| ![映射](docs/canvas/assets/panel-mapping.png) | ![Skill](docs/canvas/assets/panel-skills.png) |
+  subgraph Buses["本机矩阵总线"]
+    Eg["egress-matrix :19880<br/>租约 / 换血事件"]
+    Cf["cf-matrix :19882"]
+    Ib["instabox-matrix :19883"]
+  end
 
-| 服务器 | 启动器镜像（本地列表模式） |
-|---|---|
-| ![服务器](docs/canvas/assets/panel-server.png) | ![镜像列表](docs/canvas/assets/panel-mirror-list.png) |
+  ShardX["ShardX 启动器 REST<br/>（settings.json 发现）"]
+  Profile["ShardX Profile<br/>指纹浏览器 + CDP"]
 
-## 快速开始
-
-### 前置条件
-
-- OpenChamber **≥ 2.5.0**（扩展 API v1）
-- ShardX Launcher **2.1.x**，并在设置中开启自动化 API（默认端口 `40325`）
-- Windows（镜像依赖 WebView2；面板与 MCP 的其余能力是跨平台的）
-- 构建需要 [Bun](https://bun.sh/)；MCP 服务端需要 **Node ≥ 22**（全局 `WebSocket`）
-
-### 安装扩展
-
-```powershell
-# 1. 构建
-bun install
-bun run typecheck
-bun run build
-
-# 2. 复制到 OpenChamber 扩展目录
-$dst = "$env:USERPROFILE\.config\openchamber\extensions\shardx-workspace"
-New-Item -ItemType Directory -Force $dst | Out-Null
-Copy-Item index.js, manifest.json, icon.svg, package.json, panel, service -Destination $dst -Recurse -Force
+  Panel -->|fetch / WebSocket| Svc
+  Agent --> Mcp --> Svc
+  Svc --> Hub
+  Svc --> Eg
+  Svc --> Cf
+  Svc --> Ib
+  Svc --> Store
+  Svc -->|Bearer| ShardX
+  Svc -->|CDP| Profile
+  ShardX --> Profile
 ```
 
-重启 OpenChamber，或重新加载扩展。面板入口为 `panel/index.html`，服务入口为 `service/main.js`。
+端口与路径的单一事实源是 `core/contract.js`：
 
-### 注册 MCP 工具
+| 常量 | 值 |
+|---|---|
+| `SHARDX_SERVICE_PORT` | `19884` |
+| `SHARDX_MCP_SSE_PORT` | `19885` |
+| `SHARDX_WS_PATH` | `/api/v1/shardx/ws` |
+| egress / CF / Instabox 总线 | `19880` / `19882` / `19883` |
+| 槽位端口 | `24000 + index`，即 `24001–24250` |
 
-扩展的 `contributes.tools` 只负责聊天里的展示样式，**不会注册工具**。需要把 `index.js`
-注册到 OpenCode 配置（`~/.config/opencode/opencode.json`）：
+## 3. 安装
+
+扩展目录：
+
+```powershell
+$dst = "$env:USERPROFILE\.config\openchamber\extensions\shardx-matrix"
+New-Item -ItemType Directory -Force $dst | Out-Null
+Copy-Item package.json, icon.svg -Destination $dst -Force
+Copy-Item core, lib, service, mcp, panel -Destination $dst -Recurse -Force
+```
+
+部署后重新加载扩展（或重启 OpenChamber）。宿主启动 `service/main.js` 时会注入
+`OPENCHAMBER_SERVICE_TOKEN`；面板由服务自体在 `http://127.0.0.1:19884/` 提供。
+
+> `index.js` 与 `manifest.json` 是 v1（`shardx-workspace`）遗留文件，仅用于旧部署对照，
+> v2 不再经过它们。已安装的旧扩展目录可以继续保留，两者互不共享状态。
+
+### MCP 注册
+
+stdio（默认）：
 
 ```json
 {
   "mcp": {
     "servers": {
-      "shardx-workspace": {
+      "shardx-matrix": {
         "type": "local",
         "enabled": true,
         "command": [
-          "C:\\Users\\<你>\\.local\\tools\\node\\node.exe",
-          "C:\\Users\\<你>\\.config\\openchamber\\extensions\\shardx-workspace\\index.js"
+          "node",
+          "C:\\Users\\<you>\\.config\\openchamber\\extensions\\shardx-matrix\\mcp\\server.js"
         ]
       }
     }
@@ -120,205 +110,78 @@ Copy-Item index.js, manifest.json, icon.svg, package.json, panel, service -Desti
 }
 ```
 
-注册后工具名形如 `shardx-workspace_list_and_bind_profile`。完整清单见
-[docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)。
-
-### 第一次使用
-
-1. 打开 ShardX Workspace 面板 →「环境」。默认进入 **主界面镜像**；若启动器未带调试端口，
-   点「重启并启用镜像」（扩展会自动把 WebView2 调试参数写进启动器设置）。
-2. 点「本地列表」浏览指纹环境；或直接在镜像主界面里启动实例。
-3. 选一个空闲实例 →「绑定到当前会话并启动」。实例会在标签栏出现。
-4. 在实例标签里导航、点击、看视口；Agent 侧用同样的 `session_id` 调 MCP 工具即可接力。
-5. 切换窗口大小时镜像会按内容区像素重排（`Emulation.setDeviceMetricsOverride`，1:1 填充）。
-
-## MCP 工具
-
-32 个工具，按域分组（详见 [docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)）：
-
-| 域 | 数量 | 代表工具 |
-|---|---|---|
-| 环境与实例 | 4 | `list_and_bind_profile`、`session_attach`、`session_status`、`session_stop_and_release` |
-| 页面自动化 | 8 | `session_navigate`、`session_interact`、`session_snapshot`、`session_wait`、`session_tabs`、`session_screenshot` |
-| 分组与环境档案 | 7 | `folder_list`、`folder_rename`、`profile_create`、`profile_edit`、`profile_delete` |
-| 代理与指纹 | 5 | `proxy_list`、`proxy_add`、`fingerprint_new`、`fingerprint_list` |
-| Skill 自动化 | 4 | `skill_save`、`skill_assign`、`skill_run`、`skill_list` |
-| 工作区状态 | 1 | `workspace_state` |
-| 服务器控制 | 3 | `server_status`、`server_control`、`server_sync` |
-
-最小调用示例：
-
-```text
-shardx-workspace_list_and_bind_profile  { session_id: "demo", action: "auto-bind" }
-shardx-workspace_session_navigate       { session_id: "demo", url: "https://example.com" }
-shardx-workspace_session_snapshot       { session_id: "demo" }
-shardx-workspace_session_stop_and_release { session_id: "demo" }
-```
-
-## 架构
-
-```mermaid
-flowchart LR
-  subgraph OC["OpenChamber"]
-    UI["面板 iframe<br/>panel/main.js"]
-    HOST["宿主 host.serviceRequest"]
-    MCP["Agent / MCP 客户端"]
-  end
-
-  subgraph EXT["shardx-workspace 扩展"]
-    SVC["回环桥接服务<br/>service/main.js"]
-    IDX["MCP stdio 服务端<br/>index.js"]
-    STATE[("%APPDATA%\\shardx-workspace\\state.json")]
-  end
-
-  subgraph SX["ShardX"]
-    API["启动器 REST API<br/>127.0.0.1:40325"]
-    WEB["WebView2 主界面<br/>CDP 40326"]
-    INST["指纹实例<br/>CDP 动态端口"]
-  end
-
-  UI --> HOST --> SVC
-  SVC -->|Bearer 自动签发| API
-  SVC -->|WebSocket| INST
-  SVC -->|截图 / Input| WEB
-  MCP --> IDX
-  IDX --> API
-  IDX --> INST
-  UI <--> STATE
-  IDX <--> STATE
-```
-
-三层责任：
-
-- **面板**：只通过宿主的 `host.serviceRequest` 访问回环服务（guest CSP 禁止直连 `127.0.0.1`），
-  负责标签、视图、镜像渲染与输入转发。
-- **桥接服务**：宿主分配端口与 Bearer；自动发现 ShardX `settings.json`、现场签 HS256 JWT；
-  代理 REST、维持 CDP WebSocket、长轮询事件队列、读写共享状态、启动/停止启动器。
-- **MCP 服务端**：独立的 stdio 进程，直接驱动 ShardX REST + CDP，与面板共享同一份 state。
-
-## 目录结构
-
-```text
-openchamber-shardx/
-├── package.json            # OpenChamber 运行时清单（contributes.panel/service/tools）
-├── manifest.json           # MCP 工具目录（32 个 name/description/inputSchema）
-├── index.js                # MCP stdio 服务端（零依赖，Node ≥ 22）
-├── icon.svg
-├── panel/
-│   ├── index.html          # 面板入口
-│   ├── main.ts             # 宿主握手、transport 初始化、自动探测
-│   ├── transport.ts        # host.serviceRequest 封装
-│   ├── api.ts              # ShardX REST 客户端 + discover/鉴权
-│   ├── cdp.ts              # CDP 多路复用（命令 id / 事件分发 / 重连）
-│   ├── router.ts           # 会话 ↔ profile 独占路由
-│   ├── bridge.ts           # 面板侧实例控制（启动/接管/释放）
-│   ├── mirror.ts           # 启动器 WebView2 镜像（截图 + Input + Emulation）
-│   ├── ui.ts               # 标签工作台、四页 UI、排序/分组/接管
-│   ├── workspace.ts        # 共享状态客户端
-│   └── types.ts / util.ts / style.css
-├── service/
-│   ├── main.ts             # 回环 HTTP 桥接（19 条路由）
-│   └── ws.ts               # 手写 RFC6455 客户端（零依赖）
-├── preview/                # 离屏预览 harness + 截图
-├── docs/
-│   ├── ARCHITECTURE.md     # 架构、数据流、不变量
-│   ├── MCP-TOOLS.md        # 自动生成的工具参考
-│   ├── OPERATIONS.md       # 构建、部署、排障
-│   ├── ROADMAP.md          # 迭代路线
-│   └── canvas/             # Canvas 项目图鉴（可视化文档）
-└── scripts/gen-docs.mjs    # 从 manifest 生成文档与 Canvas 数据
-```
-
-## 开发
+SSE（给不能起子进程的客户端）：
 
 ```powershell
-bun install
-bun run typecheck        # tsc --noEmit
-bun run build            # panel/main.js + service/main.js
-bun run validate         # 校验 manifest.json
-bun run docs:gen         # manifest → docs/MCP-TOOLS.md + docs/canvas/tool-data.js
+node mcp/server.js --sse --port 19885
+# MCP 端点：http://127.0.0.1:19885/sse，消息回传：/messages?sessionId=...
 ```
 
-预览面板（不启动 OpenChamber，使用假宿主与假 ShardX 数据）：
+MCP 进程只转发到 `SHARDX_MATRIX_SERVICE_URL`（默认 `http://127.0.0.1:19884`），
+不自己碰浏览器；服务没启动时工具返回 `ERR_EGRESS_UNAVAILABLE` / HTTP 503 类错误。
+
+## 4. 快速开始
+
+1. 打开面板，点一个空槽位 → 绑定 Profile（同一个 Profile 只能绑定一个槽位）。
+2. 点「启动」。服务依次：取 egress 租约 → 确保 `127.0.0.1:240NN` 代理 → 对齐
+   Profile → 启动或复用实例 → CDP 接管 → 打开 `defaultStartUrl`。
+3. 点槽位打开抽屉：截图、观测、快速动作（goto/click/fill/press/scroll/wait/extract/
+   assertText/hover/eval）、动作流。
+4. 需要批量时点「任务」，填入动作数组 JSON；每一步之间自动加泊松延迟，冻结期间自动等待。
+5. Agent 侧直接调 `shardx_slot_launch` / `shardx_page_observe` / `shardx_page_act` /
+   `shardx_task_run` / `shardx_slot_close`，详见 [docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)。
+
+## 5. 状态目录
+
+默认 `~/.openchamber-shardx-matrix`（Windows：`C:\Users\<you>\.openchamber-shardx-matrix`），
+可用 `SHARDX_MATRIX_STATE_DIR` 覆盖：
+
+| 文件 | 内容 |
+|---|---|
+| `matrix-state.json` | 槽位绑定、健康状态、任务历史（环形 200）、事件 |
+| `credentials.json` | AES-256-GCM 加密的 Cookie / 凭据 |
+| `secret.key` | 本机凭据密钥（0600） |
+| `screenshots/` | 截图，保留最近 `screenshotRetention` 张（默认 50） |
+
+删除状态目录会丢失绑定、凭据和任务历史；Profile 与代理仍在 ShardX 里。
+
+## 6. 环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `OPENCHAMBER_SERVICE_TOKEN` | 宿主注入；服务和 MCP 都要求 `Authorization: Bearer <token>` |
+| `SHARDX_MATRIX_SERVICE_URL` | MCP 的上游服务地址，默认 `http://127.0.0.1:19884` |
+| `SHARDX_MATRIX_STATE_DIR` | 状态目录覆盖 |
+| `SHARDX_API_BASE` | 显式指定 ShardX 启动器 REST 地址 |
+| `SHARDX_LAUNCHER_SETTINGS` | 显式指定启动器 `settings.json` |
+| `SHARDX_MCP_LOG=1` | MCP 错误输出到 stderr |
+
+## 7. 目录结构
+
+```
+core/      contract / store-lock / host-bridge / profile-store
+lib/       ws / http-client / egress-client / shardx-client / cdp-runner / slot-manager / scheduler
+service/   唯一编排器：HTTP 路由、WS 总线、静态面板
+mcp/       JSON-RPC stdio + SSE 传输，5 个工具
+panel/     250 宫格、抽屉、动作流、设置
+tests/     node:test 端到端（mock egress / ShardX / CDP）
+```
+
+## 8. 开发与校验
 
 ```powershell
-bunx openchamber-guest-bundle preview/preview.ts preview/preview.js
-# 然后打开 preview/index.html?mode=cards|list|groups、?tab=mapping|skills|server、?view=instance
+npm run check   # node --check 全部源码
+npm test        # 8 个 node:test 用例，约 0.5s
 ```
 
-## 关键设计
+测试自带 mock egress、mock ShardX 启动器和 mock CDP 页面，不触碰真实浏览器。当前基线：
+8/8 通过，进程正常退出。
 
-<details>
-<summary><b>为什么需要本地桥接服务？</b></summary>
-
-面板 iframe 的 CSP 只允许访问 guest 文件源，清单里的 `origins` 只接受 https，
-`http://127.0.0.1:40325` 无法声明成可直连来源。因此面板把 `{method, path, body}` 交给
-`host.serviceRequest`，由宿主启动的 service 进程访问网络。每条路由（含 `/health`）
-都校验宿主注入的 `Authorization: Bearer <token>`。
-</details>
-
-<details>
-<summary><b>不用手填端口和 Token</b></summary>
-
-`service/main.ts` 的 `/shardx/discover` 读取 `%APPDATA%\shardx-launcher\settings.json`，
-取 `api_port` / `api_secret`，用 `api_secret` 现场签 HS256 JWT（`sub=shardx-api`）作为 Bearer。
-手动填写的 Token 优先，不会被自动检测覆盖。
-</details>
-
-<details>
-<summary><b>镜像为什么要重启启动器？</b></summary>
-
-启动器是 Tauri + WebView2，命令行调试参数无效，必须在启动时注入环境变量
-`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=40326 --remote-allow-origins=*'`。
-扩展启动 ShardX 时自动合并；已在运行的启动器可点「重启并启用镜像」。
-</details>
-
-<details>
-<summary><b>UI 启动的实例为什么一开始没有 CDP 端口？</b></summary>
-
-启动器窗口启动的实例不会把端口告诉 API。服务端在启动器 `settings.json` 的 `extra_args`
-注入 `--remote-debugging-port=0 --remote-allow-origins=*`，浏览器把实际端口写入
-`user-data/<profileId>/DevToolsActivePort`；`POST /instances/running` 为缺少 `cdp` 的运行实例
-补读该文件，面板因此能自动开标签。仍无端口的旧实例可一键接管（停止并用 API 重启）。
-</details>
-
-## 技术约束
-
-- 零第三方运行时依赖：服务只用 Node 内置模块 + 手写 RFC6455，不引入 `ws`；MCP 同理。
-- 面板不直接访问网络，全部经宿主回环桥接。
-- 实例 profile 独占：同一 profile 同时只能被一个会话锁定。
-- 构建产物 `panel/main.js`、`service/main.js` 与源码一起提交，便于直接部署。
-- 不用 `// TODO` 或占位实现；未验证的能力不写进工具目录。
-
-## 路线图
-
-- [x] 四页控制台 + 浏览器式实例标签
-- [x] CDP 多路复用、截图视口、点击/键盘转发
-- [x] 分组标签组视图、拖拽排序、多字段排序
-- [x] 启动器主界面镜像 + 自适应铺满 + 输入转发
-- [x] 运行中实例自动接管、连接自愈
-- [x] 32 个 MCP 工具与真实 E2E
-- [x] 项目图鉴（Canvas）+ 自动生成文档
-- [ ] 跨会话独占冲突的可视化提示
-- [ ] Skill 录制器（从一次真实操作生成步骤）
-- [ ] 多启动器/远程 ShardX 节点
-- [ ] 面板内 Cookie 编辑器与网络日志
-
-详见 [docs/ROADMAP.md](docs/ROADMAP.md)。
-
-## 文档索引
+## 9. 更多文档
 
 | 文档 | 内容 |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 模块职责、调用链、状态模型、不变量 |
-| [docs/MCP-TOOLS.md](docs/MCP-TOOLS.md) | 32 个工具的完整参数参考（自动生成） |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 构建、部署、环境变量、故障排查 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 版本历史与后续迭代 |
-| [HANDOFF.md](HANDOFF.md) | 逐轮开发记录与真实验证证据 |
-| [docs/canvas/](docs/canvas/) | 可视化项目图鉴源码与截图 |
-
-图鉴是单文件页面，直接用浏览器打开 [`docs/canvas/index.html`](docs/canvas/index.html) 即可；托管版发布在 Canvas 工件里（更新流程见 `docs/OPERATIONS.md` 第 9 节）。
-
-## License
-
-MIT
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 模块边界、启动 / 冻结时序、不变量 |
+| [docs/MCP-TOOLS.md](docs/MCP-TOOLS.md) | 5 个 MCP 工具的参数、返回与示例 |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 部署、MCP 注册、排障、日志 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | v2 状态与后续方向 |

@@ -1,10 +1,14 @@
 {
   "name": "openchamber-shardx",
-  "version": "1.4.0",
+  "version": "2.0.0",
   "private": true,
-  "type": "module",
-  "description": "ShardX fingerprint-browser workspace for OpenChamber: browser-style multi-session tabs, 32 MCP tools, live launcher mirror and CDP control",
+  "description": "ShardX matrix extension for OpenChamber: 250 fixed matrix slots on 127.0.0.1:19884, egress-aligned profiles on ports 24001-24250, CDP takeover of already-running browsers, rotation freeze barriers and five MCP tools",
   "license": "MIT",
+  "main": "service/main.js",
+  "bin": {
+    "openchamber-shardx-service": "service/main.js",
+    "openchamber-shardx-mcp": "mcp/server.js"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/wbi35772/openchamber-shardx.git"
@@ -18,73 +22,68 @@
     "extension",
     "shardx",
     "fingerprint-browser",
+    "matrix",
+    "egress",
     "mcp",
-    "cdp",
-    "multi-session"
+    "cdp"
   ],
-  "scripts": {
-    "build": "bun run build:panel && bun run build:service",
-    "build:panel": "bunx openchamber-guest-bundle panel/main.ts panel/main.js",
-    "build:service": "bunx openchamber-guest-bundle --node service/main.ts service/main.js",
-    "typecheck": "tsc --noEmit",
-    "validate": "node validate-manifest.mjs package.json",
-    "docs:gen": "node scripts/gen-docs.mjs"
+  "engines": {
+    "node": ">=20"
   },
-  "devDependencies": {
-    "@openchamber/sdk": "2.6.0",
-    "typescript": "^5.6.3"
+  "scripts": {
+    "start": "node service/main.js",
+    "service": "node service/main.js",
+    "mcp": "node mcp/server.js",
+    "mcp:sse": "node mcp/server.js --sse",
+    "check": "node --check core/contract.js && node --check core/store-lock.js && node --check core/host-bridge.js && node --check core/profile-store.js && node --check lib/ws.js && node --check lib/scheduler.js && node --check lib/http-client.js && node --check lib/egress-client.js && node --check lib/shardx-client.js && node --check lib/cdp-runner.js && node --check lib/slot-manager.js && node --check service/main.js && node --check mcp/server.js && node --check panel/main.js && node --check tests/shardx-matrix.test.js",
+    "test": "node --test tests/shardx-matrix.test.js"
+  },
+  "optionalDependencies": {
+    "playwright-core": "^1.49.0"
   },
   "openchamber": {
     "apiVersion": 1,
+    "displayName": "ShardX Matrix",
     "engines": {
       "openchamber": ">=2.5.0"
     },
     "contributes": {
       "panel": {
-        "id": "shardx-workspace",
-        "name": "ShardX Workspace",
+        "id": "shardx-matrix",
+        "name": "ShardX Matrix",
         "icon": "icon.svg",
         "entry": "panel/index.html"
       },
+      "page": true,
       "service": {
         "entry": "service/main.js",
-        "runtime": "host"
+        "runtime": "host",
+        "keepRunning": true
       },
       "tools": [
         {
-          "name": "列表 / 绑定指纹环境",
-          "description": "列出本机 ShardX 指纹环境，或绑定一个实例到当前会话",
-          "match": "mcp.shardx*",
-          "icon": "window-line"
+          "match": "mcp.shardx-matrix.shardx_slot_launch",
+          "name": "启动矩阵槽位",
+          "icon": "play-circle-line"
         },
         {
-          "name": "打开网页",
-          "description": "在已绑定的实例里导航到 URL",
-          "match": "mcp.shardx*",
-          "icon": "global-line"
+          "match": "mcp.shardx-matrix.shardx_page_observe",
+          "name": "观测页面",
+          "icon": "eye-line"
         },
         {
-          "name": "页面交互",
-          "description": "点击、输入、滚动或执行 JS",
-          "match": "mcp.shardx*",
+          "match": "mcp.shardx-matrix.shardx_page_act",
+          "name": "页面动作",
           "icon": "cursor-line"
         },
         {
-          "name": "提取页面内容",
-          "description": "提取 Markdown / HTML / 表单 / 纯文本",
-          "match": "mcp.shardx*",
-          "icon": "file-text-line"
+          "match": "mcp.shardx-matrix.shardx_task_run",
+          "name": "执行任务序列",
+          "icon": "play-list-line"
         },
         {
-          "name": "Cookie 管理",
-          "description": "读取、注入或清空实例 Cookie",
-          "match": "mcp.shardx*",
-          "icon": "database-2-line"
-        },
-        {
-          "name": "关闭并释放实例",
-          "description": "关闭浏览器并解除会话独占",
-          "match": "mcp.shardx*",
+          "match": "mcp.shardx-matrix.shardx_slot_close",
+          "name": "休眠矩阵槽位",
           "icon": "shut-down-line"
         }
       ]

@@ -1,15 +1,206 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark light">
-  <title>ShardX Workspace</title>
-  <link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShardX Matrix · OpenChamber</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="app" aria-live="polite"></div>
-  <div id="toasts" class="toasts" aria-live="polite"></div>
-  <script src="main.js"></script>
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect x="2" y="2" width="28" height="28" rx="7" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M9 22.5 16 9l7 13.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M11.8 18h8.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    </svg>
+    <div class="brand-text">
+      <h1>ShardX Matrix</h1>
+      <p>指纹浏览器槽位编排 · <span id="service-version">v2.0.0</span></p>
+    </div>
+  </div>
+
+  <div class="lights" id="lights" aria-label="扩展总线状态">
+    <button class="light" data-service="egress" type="button" title="Egress 19880">
+      <span class="dot"></span><span class="light-name">Egress</span><span class="light-port">19880</span>
+    </button>
+    <button class="light" data-service="cloudflare" type="button" title="Cloudflare 19882">
+      <span class="dot"></span><span class="light-name">Cloudflare</span><span class="light-port">19882</span>
+    </button>
+    <button class="light" data-service="instabox" type="button" title="Instabox 19883">
+      <span class="dot"></span><span class="light-name">Instabox</span><span class="light-port">19883</span>
+    </button>
+    <button class="light light-self" data-service="shardx-matrix" type="button" title="ShardX 19884">
+      <span class="dot"></span><span class="light-name">ShardX</span><span class="light-port">19884</span>
+    </button>
+  </div>
+
+  <div class="top-actions">
+    <button class="btn ghost" id="btn-settings" type="button" title="设置">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 7.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6Z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+    </button>
+    <button class="btn ghost" id="btn-sync" type="button">同步代理</button>
+    <button class="btn ghost danger" id="btn-sleep" type="button">全部休眠</button>
+    <button class="btn primary" id="btn-launch" type="button">全部启动</button>
+  </div>
+</header>
+
+<section class="statusbar">
+  <div class="stats">
+    <div class="stat"><span class="stat-value" id="stat-bound">0</span><span class="stat-label">绑定槽位</span></div>
+    <div class="stat"><span class="stat-value" id="stat-running">0</span><span class="stat-label">运行中</span></div>
+    <div class="stat"><span class="stat-value" id="stat-tasks">0</span><span class="stat-label">进行任务</span></div>
+    <div class="stat"><span class="stat-value" id="stat-egress">0</span><span class="stat-label">出口健康</span></div>
+    <div class="stat ws-stat"><span class="ws-dot" id="ws-dot"></span><span class="stat-label" id="ws-label">连接中</span></div>
+  </div>
+  <div class="filters">
+    <label class="search">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="m10.4 10.4 3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      <input id="filter-query" type="search" placeholder="搜索槽位 / Profile / 出口 IP / ASN" autocomplete="off">
+    </label>
+    <select id="filter-plane" title="路由平面">
+      <option value="ALL">全部平面</option>
+      <option value="ELASTIC_DATA">ELASTIC_DATA</option>
+      <option value="FIXED_RESIDENTIAL">FIXED_RESIDENTIAL</option>
+      <option value="CONTROL_PLANE">CONTROL_PLANE</option>
+    </select>
+    <select id="filter-state" title="健康状态">
+      <option value="ALL">全部状态</option>
+      <option value="BOUND">已绑定</option>
+      <option value="RUNNING">运行中</option>
+      <option value="ROTATING">换血中</option>
+      <option value="BLOCKED">受阻</option>
+      <option value="FREE">空闲</option>
+    </select>
+  </div>
+</section>
+
+<main class="workspace">
+  <div class="grid-head">
+    <span id="grid-count">250 个槽位</span>
+    <span class="hint">端口固定 24001–24250 · 与 egress 租约一一对应</span>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" hidden>
+    <p>没有匹配的槽位</p>
+    <span>清空搜索或切换筛选条件</span>
+  </div>
+</main>
+
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-grip"></div>
+  <div class="drawer-head">
+    <div class="drawer-title">
+      <span class="slot-chip" id="drawer-slot">slot-000</span>
+      <span class="drawer-profile" id="drawer-profile">未绑定 Profile</span>
+      <span class="badge" id="drawer-health">UNKNOWN</span>
+    </div>
+    <div class="drawer-actions">
+      <button class="btn ghost" id="drawer-shot-btn" type="button">截图</button>
+      <button class="btn ghost" id="drawer-observe" type="button">观测</button>
+      <button class="btn ghost" id="drawer-close" type="button" aria-label="关闭">✕</button>
+    </div>
+  </div>
+  <div class="drawer-body">
+    <figure class="shot">
+      <img id="drawer-image" alt="槽位页面截图" hidden>
+      <div class="shot-empty" id="drawer-shot-empty">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="9" width="36" height="30" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17" cy="19" r="3.4" fill="none" stroke="currentColor" stroke-width="2"/><path d="m10 34 9-9 7 7 5-5 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+        <span>点“截图”抓取当前页面</span>
+      </div>
+      <figcaption>
+        <span id="drawer-url">about:blank</span>
+        <span id="drawer-lease">无租约</span>
+      </figcaption>
+    </figure>
+    <div class="drawer-side">
+      <form class="quick" id="quick-form">
+        <div class="quick-row">
+          <select id="quick-action">
+            <option value="goto">goto</option>
+            <option value="click">click</option>
+            <option value="fill">fill</option>
+            <option value="press">press</option>
+            <option value="scroll">scroll</option>
+            <option value="wait">wait</option>
+            <option value="extract">extract</option>
+            <option value="assertText">assertText</option>
+            <option value="hover">hover</option>
+            <option value="eval">eval</option>
+          </select>
+          <input id="quick-target" placeholder="ref / selector / URL" spellcheck="false">
+        </div>
+        <input id="quick-value" placeholder="输入文本 / 按键 / 表达式 / 毫秒" spellcheck="false">
+        <div class="quick-row">
+          <button class="btn primary" type="submit">执行动作</button>
+          <button class="btn ghost" id="quick-observe" type="button">先观测</button>
+        </div>
+      </form>
+      <div class="feed-head">
+        <span>动作流</span>
+        <button class="link" id="feed-clear" type="button">清空</button>
+      </div>
+      <ol class="feed" id="feed"></ol>
+    </div>
+  </div>
+</aside>
+
+<dialog id="bind-dialog" class="modal">
+  <form method="dialog" class="modal-body">
+    <header>
+      <h2>绑定 Profile 到 <span id="bind-slot">slot-000</span></h2>
+      <p>选择同一个 ShardX Profile，槽位将固定使用端口 <span id="bind-port">24000</span> 的出口。</p>
+    </header>
+    <input id="bind-search" type="search" placeholder="搜索 Profile 名称或 ID" autocomplete="off">
+    <div class="profile-list" id="profile-list"></div>
+    <footer>
+      <span class="modal-note" id="bind-note"></span>
+      <button class="btn ghost" value="cancel" type="submit">取消</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="task-dialog" class="modal">
+  <form method="dialog" class="modal-body">
+    <header>
+      <h2>在 <span id="task-slot">slot-000</span> 执行任务</h2>
+      <p>输入动作数组（JSON）。执行前会自动等待 egress 换血屏障结束。</p>
+    </header>
+    <textarea id="task-steps" spellcheck="false" rows="12"></textarea>
+    <footer>
+      <span class="modal-note" id="task-note"></span>
+      <button class="btn ghost" value="cancel" type="submit">取消</button>
+      <button class="btn primary" id="task-run" value="run" type="submit">开始执行</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="settings-dialog" class="modal">
+  <form method="dialog" class="modal-body">
+    <header>
+      <h2>矩阵设置</h2>
+      <p>修改后立即生效并持久化到扩展状态目录。</p>
+    </header>
+    <div class="settings-grid">
+      <label>默认起始 URL<input id="set-start-url" spellcheck="false"></label>
+      <label>无头模式<select id="set-headless"><option value="false">关闭</option><option value="true">开启</option></select></label>
+      <label>动作最小延迟 (ms)<input id="set-poisson-min" type="number" min="0" max="5000" step="50"></label>
+      <label>动作最大延迟 (ms)<input id="set-poisson-max" type="number" min="0" max="10000" step="50"></label>
+      <label>换血冻结超时 (ms)<input id="set-freeze" type="number" min="1000" max="120000" step="1000"></label>
+      <label>启动超时 (ms)<input id="set-launch" type="number" min="5000" max="300000" step="1000"></label>
+      <label class="check"><input id="set-require-lease" type="checkbox"> 启动前必须取得 egress 租约</label>
+      <label>Egress 总线<input id="set-egress-url" spellcheck="false"></label>
+    </div>
+    <footer>
+      <span class="modal-note" id="settings-note"></span>
+      <button class="btn ghost" value="cancel" type="submit">取消</button>
+      <button class="btn primary" id="settings-save" value="save" type="submit">保存</button>
+    </footer>
+  </form>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="main.js"></script>
 </body>
 </html>

@@ -1,60 +1,64 @@
-# 运维手册
+# 运维手册（v2）
 
-构建、部署、升级、排障。所有命令默认在仓库根目录执行。
+所有命令默认在仓库根目录执行；部署路径以 Windows 为例。
 
 ## 1. 环境要求
 
-| 组件 | 版本 | 说明 |
-|---|---|---|
-| OpenChamber | ≥ 2.5.0 | 扩展 API v1（panel + service + tools） |
-| ShardX Launcher | 2.1.x | 需开启自动化 API，默认 `127.0.0.1:40325` |
-| Bun | 最新稳定版 | 仅构建需要 |
-| Node | ≥ 22 | MCP 服务端需要全局 `WebSocket` |
-| Windows | 10/11 | 镜像依赖 WebView2；其余能力跨平台 |
+| 组件 | 版本 / 说明 |
+|---|---|
+| OpenChamber | ≥ 2.5.0，扩展 API v2 |
+| Node | ≥ 20（无第三方运行时依赖） |
+| ShardX 启动器 | 需开启自动化 API；`%APPDATA%\shardx-launcher\settings.json` 里有 `api_port` / `api_secret` |
+| egress-matrix | `127.0.0.1:19880`，提供租约与换血 WS |
+| cf-matrix / instabox-matrix | `19882` / `19883`，仅用于面板状态灯与 `/integrations` |
+| Windows / WSL2 | 启动器在 Windows；WSL2 宿主会自动跨 `/mnt/c/Users/*/AppData/Roaming` 查找设置 |
 
-## 2. 构建与校验
+## 2. 校验与测试
 
 ```powershell
-bun install
-bun run typecheck
-bun run validate        # manifest.json 结构校验
-bun run build           # panel/main.js + service/main.js
-bun run docs:gen        # manifest → docs/MCP-TOOLS.md + Canvas 数据
+npm run check   # node --check 全部源码
+npm test        # node:test：8 个用例
 ```
 
-`bun run build` 会覆盖两个入库的产物文件；提交前务必重跑并检查 diff。
+当前基线：8/8 通过、约 0.4s、进程正常退出。测试用 mock egress / ShardX / CDP，
+不启动真实浏览器，也不会占用 19884。
 
 ## 3. 部署
 
 ```powershell
-$dst = "$env:USERPROFILE\.config\openchamber\extensions\shardx-workspace"
+$dst = "$env:USERPROFILE\.config\openchamber\extensions\shardx-matrix"
 New-Item -ItemType Directory -Force $dst | Out-Null
-Copy-Item index.js, manifest.json, icon.svg, package.json -Destination $dst -Force
-Copy-Item panel, service -Destination $dst -Recurse -Force
+Copy-Item package.json, icon.svg -Destination $dst -Force
+Copy-Item core, lib, service, mcp, panel -Destination $dst -Recurse -Force
 ```
 
-部署后：
+然后重新加载扩展或重启 OpenChamber。宿主按 `package.json` 的
+`contributes.service` 启动 `service/main.js`（端口 19884），并注入
+`OPENCHAMBER_SERVICE_TOKEN`；面板与 HTTP 接口同源。
 
-1. 重新加载扩展或重启 OpenChamber。
-2. 面板打开「环境」，确认能发现 ShardX。
-3. Agent 会话重启后 MCP 工具才刷新（`shardx-workspace_*`）。
+手工启动（调试用）：
 
-升级时保留 `%APPDATA%\shardx-workspace\state.json`；删除它会丢失映射、Skill 与启动器路径。
+```powershell
+$env:OPENCHAMBER_SERVICE_TOKEN = ""   # 空 token = 本机免鉴权
+node service/main.js
+curl.exe -s http://127.0.0.1:19884/health
+curl.exe -s http://127.0.0.1:19884/api/v1/shardx/bus-health
+```
 
 ## 4. MCP 注册
 
-`~/.config/opencode/opencode.json`：
+stdio：
 
 ```json
 {
   "mcp": {
     "servers": {
-      "shardx-workspace": {
+      "shardx-matrix": {
         "type": "local",
         "enabled": true,
         "command": [
-          "C:\\Users\\<你>\\.local\\tools\\node\\node.exe",
-          "C:\\Users\\<你>\\.config\\openchamber\\extensions\\shardx-workspace\\index.js"
+          "node",
+          "C:\\Users\\<you>\\.config\\openchamber\\extensions\\shardx-matrix\\mcp\\server.js"
         ]
       }
     }
@@ -62,84 +66,100 @@ Copy-Item panel, service -Destination $dst -Recurse -Force
 }
 ```
 
-## 5. 环境变量
+SSE：
 
-| 变量 | 使用方 | 作用 |
+```powershell
+node mcp/server.js --sse --port 19885
+# 客户端连接 http://127.0.0.1:19885/sse，按 endpoint 事件回传 /messages?sessionId=...
+```
+
+MCP 只连服务，不碰启动器与浏览器；服务未启动时工具报
+`ERR_EGRESS_UNAVAILABLE` / HTTP 503。
+
+## 5. HTTP 接口
+
+前缀 `http://127.0.0.1:19884`，除静态文件、`/health`、`bus-health`、WS 外都需要
+`Authorization: Bearer <OPENCHAMBER_SERVICE_TOKEN>`（token 为空时放行）。
+
+| 方法 | 路径 | 作用 |
 |---|---|---|
-| `OPENCHAMBER_SERVICE_PORT` | 宿主 → service | 回环服务监听端口（宿主分配） |
-| `OPENCHAMBER_SERVICE_TOKEN` | 宿主 → service | 所有路由的 Bearer 校验 |
-| `SHARDX_WORKSPACE_STATE` | service / MCP | 覆盖共享状态文件路径 |
-| `SHARDX_LAUNCHER_SETTINGS` | service / MCP | 覆盖启动器 `settings.json` 路径 |
-| `SHARDX_LAUNCHER_PATH` | service | 启动器可执行文件路径提示（优先级最高） |
-| `SHARDX_MIRROR_PORT` | service | 镜像 CDP 端口提示（探测顺序第一位） |
-| `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | 启动器 | 注入 `--remote-debugging-port=… --remote-allow-origins=*` |
+| GET | `/` `/index.html` `/style.css` `/main.js` `/icon.svg` | 面板静态资源 |
+| GET | `/health` | 进程、版本、状态目录、uptime |
+| GET | `/api/v1/shardx/bus-health` | 槽位 / 运行数 / 任务 / WS 客户端 / egress |
+| GET | `/api/v1/shardx/ws` | WebSocket 总线 |
+| GET | `/api/v1/shardx/slots?includeUnbound=1` | 槽位列表 |
+| GET | `/api/v1/shardx/slots/{slot}` | 单槽位视图 |
+| POST | `/api/v1/shardx/slots/{slot}/bind` | 绑定 `{ profileId, profileName }` |
+| POST | `/api/v1/shardx/slots/{slot}/unbind` | 解绑 |
+| GET | `/api/v1/shardx/profiles?refresh=1` | ShardX Profile + 绑定关系 |
+| GET | `/api/v1/shardx/proxies` | ShardX 代理列表 |
+| POST | `/api/v1/shardx/profile/launch` | `{ matrixSlotId, startUrl? }` |
+| POST | `/api/v1/shardx/profile/close` | `{ matrixSlotId, keepUrl? }` |
+| POST | `/api/v1/shardx/profile/sleep-all` | 全部休眠 |
+| POST | `/api/v1/shardx/profile/sync-proxies` | 逐槽位对齐代理 |
+| POST | `/api/v1/shardx/page/observe` | `{ matrixSlotId }` |
+| POST | `/api/v1/shardx/page/act` | `{ matrixSlotId, ...step }` |
+| POST | `/api/v1/shardx/page/screenshot` | `{ matrixSlotId, persist? }` |
+| POST | `/api/v1/shardx/task/execute` | `{ matrixSlotId, steps[] }` |
+| POST | `/api/v1/shardx/task/cancel` | `{ taskId, reason? }` |
+| GET | `/api/v1/shardx/tasks?matrixSlotId=&limit=` | 任务列表 |
+| GET | `/api/v1/shardx/tasks/{taskId}` | 单任务 |
+| GET/PUT/POST/DELETE | `/api/v1/shardx/credentials/{slot}` | 凭据元数据 / 写入 / 删除 |
+| POST | `/api/v1/shardx/credentials/import` | `{ matrixSlotId, cookies[] 或 cookieString, url? }` |
+| GET | `/api/v1/shardx/events?limit=` | 事件流 |
+| GET/POST | `/api/v1/shardx/settings` | 读取 / 更新设置（立即持久化） |
+| GET | `/api/v1/shardx/state` | 完整状态快照 |
+| GET | `/api/v1/shardx/integrations?refresh=1` | 四条总线探测 |
+| GET | `/api/v1/shardx/status` | 编排器 + hub 状态 |
 
-镜像端口探测顺序：`SHARDX_MIRROR_PORT` → 用户已有参数中的端口 → `40326` → `9333` → `9222` → `9223`。
+统一响应：`{ ok: true, ... }` 或 `{ ok: false, error: { code, message } }`；请求体上限 16MB。
 
-## 6. 冒烟检查
+## 6. 状态与备份
 
-```powershell
-# 扩展服务（端口与 token 从宿主日志或进程环境读取）
-$h = @{ Authorization = "Bearer $env:OPENCHAMBER_SERVICE_TOKEN" }
-Invoke-RestMethod "http://127.0.0.1:$env:OPENCHAMBER_SERVICE_PORT/health" -Headers $h
-
-# 发现启动器（应返回 found/running/port/version）
-Invoke-RestMethod "http://127.0.0.1:$env:OPENCHAMBER_SERVICE_PORT/shardx/discover" -Method POST -Headers $h
-
-# 启动器状态（应带 launcherPath 与 processes）
-Invoke-RestMethod "http://127.0.0.1:$env:OPENCHAMBER_SERVICE_PORT/workspace/server/status" -Headers $h
-```
-
-MCP 冒烟：
-
-```powershell
-node index.js   # 手写一行 JSON-RPC initialize 即可验证 stdio 正常
-```
-
-## 7. 故障排查
-
-| 现象 | 原因 | 处理 |
-|---|---|---|
-| 面板所有请求 401 | 宿主 token 未注入或服务不是宿主启动的 | 重新加载扩展；不要手动裸跑 service |
-| `/shardx/discover` 返回 `found:false` | 启动器未安装或 `settings.json` 不存在 | 设置 `SHARDX_LAUNCHER_SETTINGS` 或安装启动器 |
-| `running:false` 且不自动恢复 | 启动器路径解析失败 | 「服务器」页填一次路径；成功后会自动落盘 |
-| 镜像区域空白 | 启动器未带调试端口 | 点「重启并启用镜像」；仍失败检查 40326 是否被占用 |
-| 镜像点击位置偏移 | 容器尺寸与视口不一致 | 确认 `ResizeObserver` 生效；缩放窗口后重试 |
-| 实例没有 CDP 端口 | 启动器窗口启动且 `extra_args` 未注入 | 「接管 N 个运行实例」或重启启动器 |
-| 绑定提示已被占用 | 另一会话持有 profile 独占锁 | 在持有方释放，或选其它 profile |
-| MCP 工具不出现 | OpenCode 配置未生效 | 重启 Agent 会话；检查 `index.js` 路径与 Node ≥ 22 |
-| 列表拖拽无效 | 当前不是「手动排序」 | 排序下拉切回「手动顺序」，或切到具体文件夹标签 |
-
-## 8. 回滚
+默认目录 `~/.openchamber-shardx-matrix`，可用 `SHARDX_MATRIX_STATE_DIR` 覆盖。
 
 ```powershell
-# 查看可用版本
-git log --oneline --decorate
-
-# 切回上一个提交并重新部署
-git checkout <commit>
-bun run build
-# 重复「部署」一节的复制命令
+# 备份
+Copy-Item "$env:USERPROFILE\.openchamber-shardx-matrix" "$env:USERPROFILE\.openchamber-shardx-matrix.bak" -Recurse -Force
+# 重置（会丢绑定、凭据、任务历史）
+Remove-Item "$env:USERPROFILE\.openchamber-shardx-matrix" -Recurse -Force
 ```
 
-共享状态文件与版本无关，回滚不需要动它。若新版本改过 state 结构，先备份：
+`matrix-state.json` 与 `credentials.json` 都是原子写；并发写由 `store-lock` 串行化。
+不要手工编辑 `secret.key`，删除它会让旧凭据无法解密。
 
-```powershell
-Copy-Item "$env:APPDATA\shardx-workspace\state.json" "$env:APPDATA\shardx-workspace\state.backup.json"
-```
+## 7. 环境变量
 
-## 9. 文档与图鉴
+| 变量 | 作用 |
+|---|---|
+| `OPENCHAMBER_SERVICE_TOKEN` | 宿主注入；HTTP / WS 鉴权 Bearer |
+| `SHARDX_MATRIX_SERVICE_URL` | MCP 上游，默认 `http://127.0.0.1:19884` |
+| `SHARDX_MATRIX_STATE_DIR` | 状态目录 |
+| `SHARDX_API_BASE` | 显式启动器 REST（优先于 settings.json） |
+| `SHARDX_LAUNCHER_SETTINGS` | 显式 settings.json 路径 |
+| `SHARDX_MCP_LOG=1` | MCP 日志到 stderr |
 
-`docs/MCP-TOOLS.md` 与 `docs/canvas/tool-data.js` 都由 `manifest.json` 生成，改完工具后执行：
+## 8. 排障
 
-```powershell
-bun run docs:gen        # 重新生成 MCP 工具参考与图鉴数据
-```
+| 现象 | 检查 / 处理 |
+|---|---|
+| 启动失败 `launcher_settings_missing` | 先启动 ShardX；或设置 `SHARDX_LAUNCHER_SETTINGS`；WSL2 下确认 `/mnt/c/Users/<you>/AppData/Roaming/shardx-launcher/settings.json` 可读 |
+| `api_secret 为空` | 在启动器里打开「自动化 API」后重启启动器 |
+| 启动失败 `ERR_EGRESS_UNAVAILABLE` | egress-matrix 未起或地址不对；`curl 127.0.0.1:19880/api/v1/egress/bus-health`；面板状态灯应标红 |
+| `ERR_EGRESS_SLOT_BLOCKED` | 槽位在冷却 / 隔离 / WARP 溢出；更换槽位或等换血完成 |
+| `egress_rotation_timeout` | 总线迟迟不发 resume；看 egress 日志，必要时调大 `freezeTimeoutMs` |
+| 面板一直「连接中」，WS 1006 | 服务没起、端口被占或代理层改写了 WS；`netstat -ano | findstr 19884`；确认经 19884 同源打开面板 |
+| 401 `unauthorized` | MCP / 脚本没带宿主 token；设置 `OPENCHAMBER_SERVICE_TOKEN` 后重试 |
+| 启动后立刻 `session_missing` | CDP 未就绪或 `DevToolsActivePort` 不可读；调大 `launchTimeoutMs`，确认 Profile 允许调试 |
+| 截图不更新 | 页面在后台或实例已停止；先「启动」再「截图」；`screenshotRetention` 只保留最近 N 张 |
+| 凭据解密失败 | `secret.key` 丢失或被换；重新导入 Cookie |
 
-`docs/canvas/index.html` 是自包含图鉴（每页最多约 1 MB），包含 Chart.js 图、d3 关系图、mermaid 时序图、工具搜索、截图灯箱和 `localStorage` 标签记忆。它同时发布为 Canvas 工件，工件 id：
+日志：服务端非 2xx 只在 ≥500 时写 stderr；MCP 用 `SHARDX_MCP_LOG=1` 打开。
+测试产生的 mock 服务监听随机端口，不占用 19880–19885。
 
-```
-06GXXCJ5G4WNT2E9Z2T6K5ZTWT-shardx-workspace
-```
+## 9. 升级
 
-更新步骤：先 `canvas.read` 取当前 `version`，再 `canvas.update`（`baseVersion` 必填，`directoryPath` 指向 `docs/canvas`，`entry` 为 `index.html`）。Canvas 会自动注入固定版本的 chartjs / d3 / mermaid，**不要**把 CDN 当唯一来源；HTML 里的 CDN `<script>` 只是本地直接打开时的降级。新增截图放进 `docs/canvas/assets/`，然后重跑上面的更新。图鉴内容与仓库一起提交，保证历史版本可回溯。
+1. 覆盖 `core lib service mcp panel package.json icon.svg`。
+2. 保留状态目录；状态版本由 `normalizeState` 迁移（当前 `STATE_VERSION=2`）。
+3. 重载扩展，打开面板确认「绑定槽位 / 运行中 / 出口健康」计数正常。
+4. `npm run check && npm test` 必须全绿再提交或发布。

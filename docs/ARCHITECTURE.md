@@ -1,239 +1,146 @@
-# 架构
+# 架构（v2）
 
-本文记录模块边界、调用链、状态模型和必须保持的不变量。改代码前先看这里，
-尤其是「不变量」一节——破坏它们通常不会立刻报错，但会在多会话场景下串线。
+本文记录模块边界、时序、状态模型和不变量。改代码前先看「不变量」：破坏它们通常不会立刻
+报错，但会在多会话 / 多槽位场景下串线。
 
-## 1. 总览
+## 1. 模块
 
-```mermaid
-flowchart TB
-  subgraph Host["OpenChamber 宿主"]
-    Guest["面板 iframe<br/>guest CSP"]
-    Bridge["host.serviceRequest<br/>（注入端口 + Bearer）"]
-    Agent["Agent / MCP 客户端"]
-  end
+```
+core/contract.js        槽位、端口、状态机、路由平面、端口数学的唯一事实源
+core/store-lock.js      跨进程文件锁 + 原子写（state / credentials）
+core/host-bridge.js     ShardX 启动器发现：%APPDATA%\shardx-launcher\settings.json、
+                        WSL2 网关、SHARDX_API_BASE / SHARDX_LAUNCHER_SETTINGS
+core/profile-store.js   状态文件、设置归一化、绑定、任务环形记录、AES-256-GCM 凭据
 
-  subgraph Extension["shardx-workspace"]
-    Panel["panel/main.js<br/>标签工作台"]
-    Service["service/main.js<br/>回环桥接 :随机端口"]
-    Mcp["index.js<br/>stdio MCP"]
-    State[("state.json<br/>mappings / skills / assignments / settings")]
-  end
+lib/ws.js               RFC6455 双端实现：服务端 hub + 客户端连接、心跳、ACK 等待
+lib/http-client.js      超时 / 非 2xx / JSON 解析统一入口
+lib/egress-client.js    19880 租约、槽位缓存、WS 换血事件、冻结等待
+lib/shardx-client.js    启动器 REST（Bearer）、Profile / 代理、时区 / locale 对齐、CDP 发现
+lib/cdp-runner.js       CDP 连接、语义快照（e1..eN）、动作执行、泊松延迟
+lib/slot-manager.js     编排器：启动 / 关闭 / 任务 / 冻结 / 代理同步 / 事件广播
+lib/scheduler.js        重试、退避、任务队列辅助
 
-  subgraph ShardX["ShardX 2.1.x"]
-    Launcher["启动器 REST<br/>127.0.0.1:40325"]
-    WebView["WebView2 主界面<br/>CDP :40326"]
-    Browser["指纹实例<br/>CDP 动态端口"]
-  end
-
-  Guest --> Panel
-  Panel -->|serviceRequest| Bridge --> Service
-  Agent -->|stdio| Mcp
-  Service -->|fetch + Bearer| Launcher
-  Service -->|WebSocket| Browser
-  Service -->|截图 / Input| WebView
-  Mcp -->|fetch + Bearer| Launcher
-  Mcp -->|WebSocket| Browser
-  Panel <--> State
-  Mcp <--> State
-  Service <--> State
+service/main.js         唯一进程入口：HTTP 路由 + WS hub + 静态面板 + 授权
+mcp/server.js           MCP stdio / SSE，薄客户端，5 个工具
+panel/                  250 宫格、抽屉、动作流、设置；同源 fetch + WS
+tests/                  node:test，对 mock egress / ShardX / CDP 做端到端断言
 ```
 
-三层职责：
+`index.js` 与 `manifest.json` 属于 v1（`shardx-workspace`），v2 不加载它们。
 
-| 层 | 进程 | 能做什么 | 不能做什么 |
-|---|---|---|---|
-| 面板 | 宿主内 iframe | 渲染 UI、标签路由、镜像画布与输入映射 | 直接访问 `127.0.0.1`（CSP） |
-| 桥接服务 | 宿主子进程 | 网络请求、CDP 长连接、状态读写、启动器控制 | 渲染 UI、感知具体会话 |
-| MCP | 独立 stdio 进程 | 与面板等价的 REST/CDP 能力、状态读写 | 依赖宿主注入的 token |
+## 2. 端口与路径
 
-## 2. 调用链
+| 用途 | 地址 |
+|---|---|
+| 本扩展服务 / 面板 / 总线 WS | `http://127.0.0.1:19884`，WS `/api/v1/shardx/ws` |
+| MCP SSE（可选） | `http://127.0.0.1:19885/sse` |
+| egress-matrix | `http://127.0.0.1:19880`，WS `/api/v1/egress/ws`，租约 `POST /api/v1/egress/lease` |
+| cf-matrix / instabox-matrix | `19882` / `19883`（`/api/v1/cf/bus-health`、`/api/v1/instabox/bus-health`） |
+| 槽位出口 | `127.0.0.1:24001–24250` |
+| ShardX 启动器 | `settings.json` 的 `api_port` + `api_secret` |
 
-### 2.1 绑定并启动实例
+健康检查：`GET /health`（本服务）、`GET /api/v1/shardx/bus-health`（槽位 / 任务 /
+WS 客户端 / egress 状态）、`GET /api/v1/shardx/integrations`（四条总线探测，3s 缓存）。
+
+## 3. 启动时序
 
 ```mermaid
 sequenceDiagram
-  participant U as 用户 / Agent
   participant P as 面板 / MCP
-  participant S as 桥接服务
-  participant L as ShardX REST
-  participant B as 指纹实例
+  participant S as service :19884
+  participant E as egress :19880
+  participant L as ShardX 启动器
+  participant B as Profile 浏览器
 
-  U->>P: bind(profileId)
-  P->>S: /shardx/discover
-  S-->>P: {port, token}（HS256 现场签发）
-  P->>S: /proxy startProfile
-  S->>L: POST /profiles/{id}/start
-  L-->>S: {web_socket_debugger_url}
-  S-->>P: ws 地址
-  P->>S: /cdp/open {url, headers}
-  S->>B: WebSocket 握手
-  P->>S: /cdp/send Target.getTargets
-  S-->>P: 页面 target 列表
-  P->>S: /cdp/send Target.attachToTarget
-```
-
-要点：
-
-- profile 独占锁在面板 `SessionIsolationRouter` 与 MCP 的 state 双向校验；
-- 同一实例的多个标签共享一条 CDP 连接，通过 `sessionId` 分流；
-- 关闭面板标签**不会**停止实例；只有「停止并释放」才会 stop + 解锁。
-
-### 2.2 接管启动器里已运行的实例
-
-```mermaid
-sequenceDiagram
-  participant P as 面板
-  participant S as 桥接服务
-  participant L as 启动器 API
-  participant F as DevToolsActivePort
-
-  P->>S: POST /instances/running
-  S->>L: GET /running
-  L-->>S: 运行实例（可能没有 cdp 字段）
-  S->>F: 读 user-data/<profileId>/DevToolsActivePort
-  F-->>S: 端口 + /devtools/browser/<uuid>
-  S-->>P: enriched / attachable
-  P->>S: attachRunningProfile(ws)
-```
-
-启动器窗口启动的实例默认不向 API 暴露 CDP 端口。扩展在启动器
-`settings.json` 的 `extra_args` 注入 `--remote-debugging-port=0 --remote-allow-origins=*`，
-Chromium 会把实际端口写进 profile 数据目录；服务端补读后返回可附加的 ws 地址。
-仍无端口的旧实例由镜像工具栏的「接管 N 个运行实例」按钮处理：先 stop，再走 API 重启。
-
-### 2.3 主界面镜像
-
-```mermaid
-sequenceDiagram
-  participant M as LauncherMirror
-  participant S as 桥接服务
-  participant W as WebView2 主界面
-  participant R as ResizeObserver
-
-  M->>S: /launcher/status（探测 40326）
-  S->>W: GET /json/list
-  S-->>M: webSocketDebuggerUrl
-  M->>S: /cdp/open
-  loop 每 900ms
-    M->>S: Page.captureScreenshot
-    S-->>M: JPEG base64
-    M->>M: 画到 <img>
+  P->>S: POST /profile/launch {matrixSlotId}
+  S->>S: 校验绑定，状态 LAUNCHING，广播 slot.launching
+  S->>E: POST /lease（requireEgressLease）
+  E-->>S: egressPort / country / healthState / fingerprint
+  S->>L: 确保 127.0.0.1:240NN 代理
+  S->>L: patch Profile：proxy_id、timezone、locale、webrtc=proxy
+  alt Profile 已在运行
+    S->>L: GET profile.cdp.webSocketDebuggerUrl
+  else 未运行
+    S->>L: startProfile(headless)
+    S->>L: waitForCdp 轮询
   end
-  R-->>M: 内容区尺寸变化
-  M->>S: Emulation.setDeviceMetricsOverride
-  M->>S: Input.dispatchMouseEvent / dispatchKeyEvent / insertText
+  S->>B: CDP attach（/json/version WebSocket）
+  S->>B: goto(defaultStartUrl)
+  S-->>P: slot 视图（browserState=RUNNING，egressFingerprint）
 ```
 
-镜像不是嵌入 iframe，而是「截图流 + 输入回放」：
+任何一步失败：状态置 `ERROR`、写入 `lastError`、广播 `slot.failed` + `slot.updated`，
+异常原样返回给调用方。同一槽位并发启动共享同一个 Promise（`launching` map）。
 
-- 截图按容器像素 1:1 填充，启动器页面随 `Emulation` 覆盖重排；
-- 鼠标坐标按 aspect-fit 反算，滚轮、右键、键盘、粘贴、IME 结果都映射到 `Input.*`；
-- CDP 断开时保留占位页并自动重连，不阻塞其它标签。
+## 4. 换血冻结
 
-## 3. 状态模型
+egress 总线在换出口前广播 `PRE_ROTATION_FREEZE`：
 
-共享文件：`%APPDATA%\shardx-workspace\state.json`（可用 `SHARDX_WORKSPACE_STATE` 覆盖）。
+1. `lib/egress-client.js` 把槽位标脏，并立即回 `ACK_FREEZE { eventId }`。
+2. 所有动作入口（`page_act`、`task_run`、启动后的 `goto`）先
+   `waitForUnfrozen(slot, freezeTimeoutMs)`；超时抛 `egress_rotation_timeout`。
+3. `POST_ROTATION_RESUME` / `ROTATION_RESUME` 解除等待；`ROTATION_FAILED` 记录日志并解除。
+4. 面板通过 hub 收到 `rotation.freeze` / `rotation.resume` / `rotation.failed`，
+   抽屉显示「换血中」。
 
-```json
-{
-  "version": 1,
-  "mappings": [
-    {
-      "profile_id": "uuid",
-      "profile_name": "环境名",
-      "session_id": "openchamber-session",
-      "source": "panel | mcp",
-      "updated_at": 1760000000000
-    }
-  ],
-  "skills": [
-    {
-      "id": "skill-uuid",
-      "name": "登录流程",
-      "site": "example.com",
-      "url_pattern": "https://example.com/*",
-      "description": "",
-      "steps": [{ "action": "navigate", "url": "https://example.com/login" }],
-      "created_at": 0,
-      "updated_at": 0
-    }
-  ],
-  "assignments": [
-    { "skill_id": "skill-uuid", "target_type": "profile", "target_id": "uuid", "created_at": 0 }
-  ],
-  "settings": { "launcher_path": "D:\\Tools\\shardx\\ShardBrowser-Launcher.exe" }
-}
-```
+服务端 hub 的 `broadcastAwait()` 负责把冻结事件发给面板并等待面板 ACK：
+客户端 ID 去重、超时统一收口、`eventId` 保留上游值（没有才生成）。
 
-写入策略：服务端与 MCP 都使用「读 → 改 → 原子替换」（临时文件 + rename），
-避免面板与 Agent 同时写导致半截 JSON。
+## 5. 任务执行
 
-### 面板本地状态（localStorage）
+`POST /task/execute` → `manager.runTask`：
 
-| 键 | 作用 |
+1. 校验绑定，确保 CDP 会话（必要时先启动）。
+2. 生成 `taskId`，写 store（环形 200 条），广播 `task.started`。
+3. 逐步执行 `runStep`，每步前等冻结解除，步间泊松延迟；`retries` 1–5 次。
+4. 每步广播 `task.log`，完成后广播 `task.done`，同步 `slot.updated`。
+5. `POST /task/cancel` 或槽位休眠 → `CANCELLED`；错误 → `FAILED`，保留 `lastError`。
+
+`runStep` 成功返回必带 `ok: true`；调用方据此判定，不看 HTTP 层。
+
+## 6. 状态模型
+
+`matrix-state.json`（版本 2）：
+
+| 字段 | 说明 |
 |---|---|
-| `shardx-home-mode` | `mirror` / `local`，环境页默认主界面镜像 |
-| `shardx-sort` | `{key, dir}`，列表排序字段与方向 |
-| `shardx-list-folder` | 当前文件夹标签，`__all__` 表示全部 |
-| `shardx-view` | `cards` / `list` / `groups` |
-| `shardx-profile-order` | 每个文件夹内的手动拖拽顺序 |
+| `bindings[]` | `matrixSlotId`、`profileId`、`profileName`、`browserState`、`healthState`、`egressFingerprint`、`lastUrl`、`lastTitle`、`lastError`、时间戳 |
+| `tasks[]` | 最近 200 条任务，含步骤结果与日志（每任务日志环形 300） |
+| `events[]` | 面板事件流（最近 100 条） |
+| `settings` | 见下 |
+| `counters` | `launches` / `sleeps` 等累计值 |
 
-## 4. 桥接服务路由
+设置默认值：`servicePort=19884`、`defaultStartUrl=about:blank`、`headless=false`、
+`poissonMinMs=400`、`poissonMaxMs=1800`、`freezeTimeoutMs=30000`、`launchTimeoutMs=60000`、
+`requireEgressLease=true`、`screenshotRetention=50`，以及三条总线 URL。
 
-端口与 Bearer 由宿主通过 `OPENCHAMBER_SERVICE_PORT` / `OPENCHAMBER_SERVICE_TOKEN` 注入，
-所有路由都校验 `Authorization`。
+浏览器状态机：`STOPPED → LAUNCHING → RUNNING → CLOSING → STOPPED`，失败分支 `ERROR`。
+任务状态机：`QUEUED → RUNNING → DONE / FAILED / CANCELLED`。
 
-| 路由 | 作用 |
-|---|---|
-| `GET /health` | 宿主就绪探测 |
-| `POST /shardx/discover` | 读启动器 settings，返回端口 + 现场签发的 Bearer |
-| `POST /instances/running` | 运行实例列表，为缺少 CDP 的条目补读 `DevToolsActivePort` |
-| `GET/POST /launcher/settings` | 读取/合并启动器设置（含调试参数注入） |
-| `GET /launcher/status` | 探测镜像 CDP 端口与页面 target |
-| `POST /proxy` | 代理 ShardX REST（仅回环 baseUrl，15s 超时，7MB 上限） |
-| `POST /cdp/open` | 建立 CDP WebSocket，返回 `sessionId` |
-| `POST /cdp/send` | 写入一帧 CDP 命令 |
-| `POST /cdp/events` | 长轮询取响应与事件（`waitMs ≤ 5000`） |
-| `POST /cdp/close` | 关闭 CDP 连接 |
-| `GET/POST /workspace/state` | 读/写共享状态 |
-| `POST /workspace/mapping` | 写入或删除会话映射 |
-| `POST /workspace/skill` | 创建/更新 Skill |
-| `POST /workspace/skill/remove` | 删除 Skill |
-| `POST /workspace/assign` | 分配/取消分配 Skill |
-| `POST /workspace/settings` | 更新设置（启动器路径等） |
-| `GET /workspace/server/status` | 启动器状态、进程、镜像端口 |
-| `POST /workspace/server/control` | start / stop / restart，并等待 `/health` |
-| `POST /workspace/server/sync` | 同步分组、环境、代理、运行实例 |
+`credentials.json` 只存密文；`secret.key` 首次使用时生成（0600）。凭据接口永远不会回显明文，
+导入后返回 cookie 名列表。
 
-## 5. 不变量
+## 7. WS 协议
 
-1. **一个 profile 只能被一个会话锁定**：绑定前同时检查内存锁与 state.json。
-2. **关闭标签 ≠ 停止实例**：`closeTab` 只移除 UI，`releaseProfile` 才 stop + 解锁。
-3. **CDP 连接按 profile 复用**：不要为同一 profile 重复 `connect`，否则事件会分叉。
-4. **面板不直连网络**：新增能力一律走 service 路由，否则 guest CSP 会拦。
-5. **启动器路径不做假设**：解析顺序为 state → 运行进程 → 常见安装目录；解析结果落盘。
-6. **镜像输入必须做坐标反算**：容器尺寸与 WebView2 视口不一致时直接转发会点偏。
-7. **构建产物入库**：`panel/main.js` 与 `service/main.js` 随源码提交，部署不依赖构建机。
+`/api/v1/shardx/ws?clientId=...&role=panel|observer`。
 
-## 6. 模块地图
+- 服务端帧：`slot.updated`、`slot.bound`、`slot.unbound`、`slot.launching`、`slot.launched`、
+  `slot.closed`、`slot.failed`、`task.started`、`task.log`、`task.done`、`rotation.freeze`、
+  `rotation.resume`、`rotation.failed`、`settings.updated`、`SERVICE_READY`。
+- 客户端帧：`ACK_FREEZE { eventId }`（面板）、`ping` / `pong`、`close`。
+- 服务端发出的帧不掩码（浏览器 WebSocket 要求）；客户端帧必须掩码。
+- 心跳 30s；连接关闭码 `1001` 表示服务退出。
 
-| 文件 | 行数（约） | 职责 |
-|---|---:|---|
-| `panel/ui.ts` | 3692 | 标签工作台、四页 UI、排序/分组/接管 |
-| `panel/style.css` | 1363 | 暗色极客主题、响应式布局 |
-| `panel/bridge.ts` | 892 | 启动/接管/释放、工具实现 |
-| `panel/mirror.ts` | 600 | 启动器镜像、输入转发、尺寸自适应 |
-| `panel/cdp.ts` | 299 | CDP 多路复用、事件分发、重连 |
-| `panel/api.ts` | 296 | ShardX REST 客户端、discover、鉴权 |
-| `panel/router.ts` | 193 | 会话隔离、profile 独占 |
-| `service/main.ts` | 1422 | 回环桥接、19 条路由、启动器控制 |
-| `service/ws.ts` | 279 | 手写 RFC6455 客户端 |
-| `index.js` | 1882 | MCP stdio、32 个工具 |
+## 8. 不变量
 
-## 7. 已知边界
-
-- 镜像依赖 Windows WebView2 + 启动器重启时才生效的调试参数。
-- ShardX 2.1.x 的 API 没有稳定的公开契约，升级后优先跑 `bun run validate` 与真实 E2E。
-- `DevToolsActivePort` 只在实例运行期间存在；实例停止后补读会失败，这是预期行为。
-- 同一 profile 的多个页面 target 共用一条 CDP 连接，`session_tabs switch` 只改变后续命令的默认 target。
+1. 端口数学只在 `core/contract.js`：`slot-001 ↔ 24001`，`slot-250 ↔ 24250`；
+   任何模块不得自算端口。
+2. 一个 Profile 同时只能绑定一个槽位；绑定写入必须在 `withStateLock` 内完成。
+3. 启动前必须先拿到租约（默认强制）；拿不到就失败，不降级直连。
+4. 动作只能在 CDP 会话存在时执行；`ensureSession` 是唯一入口。
+5. 冻结期间不允许任何页面动作；`waitForUnfrozen` 不得被绕过。
+6. 凭据明文只存在于内存；落盘必须加密，日志不得出现 Cookie 值。
+7. 面板 / MCP 不直接访问 ShardX 或浏览器，只走 `127.0.0.1:19884`。
+8. 服务端帧不掩码、客户端帧掩码；`WsConn` 的 `mask` 选项不得在两端混用。
+9. `runStep` 成功必须返回 `ok: true`，失败必须抛错或返回 `ok: false`，不得返回空对象。
+10. 状态文件必须原子写（临时文件 + rename），锁超时 20s、陈旧 60s。

@@ -1,4 +1,36 @@
-# ShardX Workspace 交接（2026-11-07）
+# ShardX Matrix 交接
+
+## v2（2026-11-17）
+
+v2 在同一个仓库里重写为 `shardx-matrix`：250 个固定槽位（`slot-001..slot-250` ↔
+`127.0.0.1:24001..24250`），服务端唯一编排器 `service/main.js`（19884），面板同源，
+MCP 精简为 5 个工具（stdio / SSE 19885）。
+
+- 入口：`package.json` → `openchamber.apiVersion=1`，panel `shardx-matrix`（同源
+  `panel/index.html`，`page: true`），service 由宿主托管（端口经
+  `OPENCHAMBER_SERVICE_PORT` 注入），MCP `mcp/server.js`（stdio / SSE 19885）。
+- 面板双模式：应用内走宿主 postMessage 桥并按 5s 轮询（CSP 禁止直连 127.0.0.1）；
+  单独打开 `http://127.0.0.1:<port>/` 时自动改用 fetch + WebSocket。
+- 核心链：egress 租约 → 槽位代理 → Profile 对齐（proxy / 时区 / locale / webrtc）→
+  CDP 接管 → 语义快照与动作；换血冻结期间动作等待 resume。
+- 状态：`~/.openchamber-shardx-matrix`（`SHARDX_MATRIX_STATE_DIR` 可覆盖），凭据
+  AES-256-GCM 加密。
+- 发现文件：service 启动后写入 `OPENCHAMBER_SERVICE_DATA_DIR/service.json` 与
+  `~/.openchamber-shardx-matrix/run/service.json`（port / token / pid），MCP 自动读取。
+- 验证：`npm run check` 通过；`npm test` 8/8 通过（约 0.4s，进程正常退出）；manifest
+  通过 SDK schema 校验；已部署到 `~/.config/openchamber/extensions/shardx-matrix` 并
+  登记进 `extensions.json`（重启 OpenChamber 后加载）。
+- 状态（2026-11-17 收工）：代码已提交；扩展已部署并登记进 `extensions.json`，MCP 已接入
+  `opencode.json`（5 个工具已生效）。
+- 明天继续：重启 OpenChamber → 扩展页确认 ShardX Matrix 整页/面板 → 实机绑定 1 槽 →
+  用 5 个 MCP 工具跑一遍。详见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+
+文档：README / docs/ARCHITECTURE.md / docs/OPERATIONS.md / docs/MCP-TOOLS.md 已对齐 v2。
+
+---
+
+# v1 交接（2026-11-07，历史）
+
 
 ## 现状
 - 扩展 v1.3.0：MCP 32 个工具，覆盖分组、指纹环境、代理、指纹库、实例接管、标签、截图、快照、Cookie、Skill、服务器控制。
