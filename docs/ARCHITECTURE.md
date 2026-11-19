@@ -26,7 +26,8 @@ panel/                  250 宫格、抽屉、动作流、设置；同源 fetch 
 tests/                  node:test，对 mock egress / ShardX / CDP 做端到端断言
 ```
 
-`index.js` 与 `manifest.json` 属于 v1（`shardx-workspace`），v2 不加载它们。
+扩展入口只来自 `package.json` 的 `openchamber` 字段（v2 没有 `manifest.json`）。
+v1（`shardx-workspace`）的 `index.js`、`panel/*.ts`、`preview/`、`docs/canvas/` 已移除。
 
 ## 2. 端口与路径
 

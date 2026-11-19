@@ -251,11 +251,14 @@ async function startMockShardx(options = {}) {
     profiles: options.profiles || [{
       id: 'profile-1',
       name: 'Alpha',
-      notes: '',
-      folder: '',
+      notes: 'keep me',
+      folder: 'Team',
       proxy_id: '',
       running: false,
-      fingerprint: { timezone: 'UTC', locale: 'en-US' },
+      timezone: 'UTC',
+      icu_locale: 'en-US',
+      screen: { width: 1920, height: 1080 },
+      noise: { canvas: { enabled: true, seed: 7 } },
     }],
     proxies: [],
     patched: [],
@@ -295,7 +298,15 @@ async function startMockShardx(options = {}) {
         sendJson(res, 404, { ok: false, error: { message: 'profile missing' } });
         return;
       }
-      Object.assign(profile, body);
+      if (body.fingerprint && typeof body.fingerprint === 'object') {
+        const meta = {};
+        for (const key of ['id', '_meta', 'running', 'cdp', 'proxy_id', 'folder']) {
+          if (key in profile) meta[key] = profile[key];
+        }
+        for (const key of Object.keys(profile)) delete profile[key];
+        Object.assign(profile, meta, body.fingerprint);
+      }
+      if (typeof body.proxy_id === 'string') profile.proxy_id = body.proxy_id;
       state.patched.push({ id: profile.id, body });
       sendJson(res, 200, profile);
       return;
@@ -670,7 +681,12 @@ test('shardx-client: JWT 鉴权、代理对齐与 CDP 地址', async () => {
     const patch = mock.state.patched.find((entry) => entry.id === 'profile-1');
     assert.equal(patch.body.proxy_id, proxy.id);
     assert.equal(patch.body.fingerprint.webrtc, 'proxy');
-    assert.ok(patch.body.fingerprint.timezone);
+    assert.equal(patch.body.fingerprint.timezone, 'America/New_York');
+    assert.equal(patch.body.fingerprint.icu_locale, 'en-US');
+    assert.equal(patch.body.fingerprint.name, 'Alpha');
+    assert.equal(patch.body.fingerprint.notes, 'keep me');
+    assert.equal(patch.body.fingerprint.screen.width, 1920);
+    assert.equal(mock.state.profiles[0].name, 'Alpha');
 
     const started = await client.startProfile('profile-1');
     assert.equal(mock.state.started[0], 'profile-1');

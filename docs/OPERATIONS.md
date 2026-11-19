@@ -6,8 +6,9 @@
 
 | 组件 | 版本 / 说明 |
 |---|---|
-| OpenChamber | ≥ 2.5.0，扩展 API v2 |
+| OpenChamber | ≥ 2.5.0，guest 扩展（`package.json` 的 `openchamber.apiVersion: 1`） |
 | Node | ≥ 20（无第三方运行时依赖） |
+| Chrome | ≥ 109；OpenChamber 内置浏览器（server-browser 扩展）需在 `extensions/server-browser/config.json` 指定 `chromePath`，改后 `PUT /api/guests/server-browser/enabled` false→true 重启其服务 |
 | ShardX 启动器 | 需开启自动化 API；`%APPDATA%\shardx-launcher\settings.json` 里有 `api_port` / `api_secret` |
 | egress-matrix | `127.0.0.1:19880`，提供租约与换血 WS |
 | cf-matrix / instabox-matrix | `19882` / `19883`，仅用于面板状态灯与 `/integrations` |
@@ -33,8 +34,32 @@ Copy-Item core, lib, service, mcp, panel -Destination $dst -Recurse -Force
 ```
 
 然后重新加载扩展或重启 OpenChamber。宿主按 `package.json` 的
-`contributes.service` 启动 `service/main.js`（端口 19884），并注入
-`OPENCHAMBER_SERVICE_TOKEN`；面板与 HTTP 接口同源。
+`contributes.service` 启动 `service/main.js`，端口经 `OPENCHAMBER_SERVICE_PORT`
+注入（宿主用随机空闲端口，不一定是 19884），并注入 `OPENCHAMBER_SERVICE_TOKEN`。
+启动后服务把 `{port, token, pid, url}` 写进
+`$env:OPENCHAMBER_SERVICE_DATA_DIR\service.json` 和
+`~/.openchamber-shardx-matrix/run/service.json`，MCP 与调试脚本都从这里取。
+
+宿主不会自动打开扩展的能力门：首次部署后要在扩展界面批准 `service`，或直接调
+
+```powershell
+curl.exe -s -X PUT http://127.0.0.1:<宿主端口>/api/guests/shardx-matrix/capabilities `
+  -H "Content-Type: application/json" -d "{\"granted\":[\"service\"]}"
+```
+
+授权前 `GET /api/guests/shardx-matrix/service/status` 不会变 `ready`，面板也只能
+经桥返回 `NOT_GRANTED`。
+
+槽位还必须在 egress 有租约（`requireEgressLease=true` 时）。查现有租约：
+
+```powershell
+curl.exe -s http://127.0.0.1:19880/api/v1/egress/slots
+# 把已有租约绑到目标槽位
+curl.exe -s -X POST http://127.0.0.1:19880/api/v1/egress/lease/bind `
+  -H "Content-Type: application/json" -d "{\"matrixSlotId\":\"slot-001\",\"leaseId\":\"lease_xxx\"}"
+```
+
+没有租约时启动返回 `ERR_EGRESS_LEASE_MISSING`（HTTP 404 语义）。
 
 手工启动（调试用）：
 
@@ -75,6 +100,10 @@ node mcp/server.js --sse --port 19885
 
 MCP 只连服务，不碰启动器与浏览器；服务未启动时工具报
 `ERR_EGRESS_UNAVAILABLE` / HTTP 503。
+
+不配置 `SHARDX_MATRIX_SERVICE_URL` 时，每次工具调用都会现读 discovery 文件
+（`OPENCHAMBER_SERVICE_DATA_DIR\service.json` → `~/.openchamber-shardx-matrix/run/service.json`），
+所以宿主拉起服务后不需要重启 MCP 进程；显式配置 URL 的优先级更高。
 
 ## 5. HTTP 接口
 

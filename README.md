@@ -6,7 +6,7 @@
 事。
 
 - 扩展 ID：`shardx-matrix`（面板、服务、总线、工具统一使用这个 ID）
-- 宿主要求：OpenChamber ≥ 2.5.0，扩展 API v2
+- 宿主要求：OpenChamber ≥ 2.5.0，guest 扩展（`package.json` 的 `openchamber.apiVersion: 1`）
 - 运行时：Node ≥ 20，零运行时依赖；`playwright-core` 可选，仅用于非 ShardX 浏览器的调试
 - 平台：Windows（ShardX 启动器）+ WSL2 宿主（自动发现 Windows 侧 `%APPDATA%`）
 
@@ -86,8 +86,9 @@ Copy-Item core, lib, service, mcp, panel -Destination $dst -Recurse -Force
 部署后重新加载扩展（或重启 OpenChamber）。宿主启动 `service/main.js` 时会注入
 `OPENCHAMBER_SERVICE_TOKEN`；面板由服务自体在 `http://127.0.0.1:19884/` 提供。
 
-> `index.js` 与 `manifest.json` 是 v1（`shardx-workspace`）遗留文件，仅用于旧部署对照，
-> v2 不再经过它们。已安装的旧扩展目录可以继续保留，两者互不共享状态。
+> v2 只通过 `package.json` 的 `openchamber` 字段被发现，没有 `manifest.json`。v1
+> （`shardx-workspace`）的 `index.js`、`panel/*.ts`、`preview/`、`docs/canvas/` 已从仓库
+> 移除；已安装的旧扩展目录可以继续保留，两者互不共享状态。
 
 ### MCP 注册
 

@@ -1,6 +1,44 @@
 # Changelog
 
-所有值得注意的变更都记在这里。版本号同时更新 `package.json` 与 `manifest.json`。
+所有值得注意的变更都记在这里。版本号同时更新 `package.json`。
+
+## 2.0.0 — 2026-11-18
+
+完全重写为矩阵家族第四扩展 `shardx-matrix`，与 egress（19880）、Cloudflare（19882）、
+Instabox（19883）共用槽位契约。
+
+### 新增
+
+- 固定槽位契约：`slot-001..slot-250` ↔ `127.0.0.1:24001..24250`，统一
+  `matrixSlotId` / `routingPlane` / `healthState` / `egressFingerprint` 字段
+  （`core/contract.js`）。
+- 跨进程原子状态：`store-lock`（PID 存活探测、Windows/WSL2 `EPERM`/`EBUSY` 退避）+
+  `profile-store`（`matrixSlotId ↔ profileId` 1:1、任务环形 200 条、AES-256-GCM 凭据）。
+- egress 租约与换血屏障：启动前取租约，`PRE_ROTATION_FREEZE` /
+  `POST_ROTATION_RESUME` 驱动动作等待与 `ack-freeze`。
+- ShardX 客户端：`settings.json` 发现、HS256 JWT 现场签发、代理 / 时区 / locale /
+  `webrtc=proxy` 对齐、`DevToolsActivePort` 轮询；WSL2 宿主网关自动探测
+  （`core/host-bridge.js`）。
+- CDP 接管：`playwright-core` `connectOverCDP`，缺失时零依赖原生 CDP 回退；
+  语义快照（URL / 标题 / 可见文本 / ARIA / `e1..eN`）；动作泊松延迟 400–1800ms。
+- 服务 `127.0.0.1:19884`：`/profile/launch|close`、`/page/observe|act`、
+  `/task/execute`、`/slots`、`bus-health`、`integrations`、WS
+  `/api/v1/shardx/ws`、完整 CORS 与面板静态托管。
+- MCP：stdio + SSE `19885`，5 个工具 `shardx_slot_launch` / `shardx_page_observe` /
+  `shardx_page_act` / `shardx_task_run` / `shardx_slot_close`。
+- 面板：250 宫格、双轨进度条、四扩展状态灯、批量启动 / 关闭 / 任务、抽屉截图与动作流。
+- 测试：`node:test` 8 组端到端（mock egress / ShardX / CDP），零外网依赖。
+
+### 变更
+
+- `package.json` 升到 2.0.0（CommonJS），`openchamber` 字段直接声明 panel、service 与
+  5 个工具；宿主发现不再依赖 `manifest.json`。
+- 文档重写为 v2：README、ARCHITECTURE、MCP-TOOLS、OPERATIONS、ROADMAP。
+
+### 移除
+
+- v1（`shardx-workspace`）实现：`index.js`、`manifest.json`、`tsconfig.json`、
+  `panel/*.ts`、`preview/`、`docs/canvas/`、`scripts/gen-docs.mjs`。
 
 ## 1.4.0 — 2026-11-15
 

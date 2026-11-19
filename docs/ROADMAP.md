@@ -21,14 +21,26 @@ Agent 都能安全地编排同一批浏览器，而不互相踩线。
 
 ### 1. 部署与实机验收
 
-- 安装到 `~/.config/openchamber/extensions/shardx-matrix`，重启宿主；
-- 绑定 1 个 Profile，跑通「启动 → 观测 → 动作 → 截图 → 休眠」；
-- 验收：面板状态灯四绿，`/bus-health` 的 `wsClients ≥ 1`，槽位端口与 egress 租约一致。
+- [x] 安装到 `~/.config/openchamber/extensions/shardx-matrix`，宿主热加载（无需重启：
+  宿主 catalog 已识别，`PUT /api/guests/shardx-matrix/capabilities {"granted":["service"]}`
+  授权后 `service/status` 变 `ready`，端口由宿主随机注入，discovery 文件同步更新）
+- [x] 绑定 1 个 Profile，跑通「启动 → 观测 → 动作 → 任务 → 休眠」
+- [x] 验收：`slot-004` + egress ACTIVE 租约（出口 104.28.163.182，AS13335），
+  CDP 接管 `https://example.com/`；`shardx_task_run` 在 httpbin.org 3/3 步通过并
+  提取 `Herman Melville - Moby-Dick`；`shardx_slot_close` 正常休眠
+- 注意：`requireEgressLease=true` 时，槽位必须先在 egress 有租约。egress 当前只为
+  `slot-002`（COOLDOWN）和 `slot-004`（ACTIVE）发了租约，所以实机验收用 `slot-004`。
+  其它槽位用 `POST http://127.0.0.1:19880/api/v1/egress/lease/bind`
+  `{"matrixSlotId":"slot-00N","leaseId":"..."}` 把已有租约绑到槽位上。
+- 待做：面板内四绿状态灯的视觉验收（需要带浏览器的宿主环境）。
 
 ### 2. MCP 客户端接入
 
-- 在 opencode / OpenChamber 里注册 stdio；需要时再验证 SSE；
-- 验收：`tools/list` 返回 5 个工具，`shardx_slot_launch` 能驱动真实槽位。
+- [x] 在 opencode / OpenChamber 里注册 stdio（`~/.config/opencode/opencode.json`
+  的 `mcp.servers["shardx-matrix"]`）；SSE 留给需要时验证
+- [x] 验收：`tools/list` 返回 5 个工具，5 个工具全部驱动真实槽位通过
+- 说明：MCP 进程启动时服务可能还没起来；`serviceUrl` 未显式配置时每次调用都会
+  重新读 discovery 文件，所以宿主拉起 service 后无需重启 MCP。
 
 ### 3. 观察者与多面板
 
@@ -61,5 +73,4 @@ Agent 都能安全地编排同一批浏览器，而不互相踩线。
 - 代理延迟探测与自动换槽建议；
 - CI：`npm run check` + `npm test` + 文档链接检查。
 
-> `docs/canvas/` 是 v1 的项目图鉴，仅作历史参考；v2 的架构以
-> [ARCHITECTURE.md](ARCHITECTURE.md) 为准。
+> v2 的架构以 [ARCHITECTURE.md](ARCHITECTURE.md) 为准；v1 的 Canvas 图鉴已移除。

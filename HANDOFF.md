@@ -20,10 +20,71 @@ MCP 精简为 5 个工具（stdio / SSE 19885）。
 - 验证：`npm run check` 通过；`npm test` 8/8 通过（约 0.4s，进程正常退出）；manifest
   通过 SDK schema 校验；已部署到 `~/.config/openchamber/extensions/shardx-matrix` 并
   登记进 `extensions.json`（重启 OpenChamber 后加载）。
-- 状态（2026-11-17 收工）：代码已提交；扩展已部署并登记进 `extensions.json`，MCP 已接入
-  `opencode.json`（5 个工具已生效）。
-- 明天继续：重启 OpenChamber → 扩展页确认 ShardX Matrix 整页/面板 → 实机绑定 1 槽 →
-  用 5 个 MCP 工具跑一遍。详见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+- 状态（2026-11-18 验收）：宿主已识别并加载 `shardx-matrix`（`/api/guests` 可见
+  `pageEntry` 与 5 个工具）。授权 `service` 能力后宿主托管服务并注入随机端口
+  （本次 62796），discovery 文件随之更新，MCP 自动跟随，无需重启。
+- 实机链路已验证：`slot-004`（egress ACTIVE，出口 104.28.163.182 / AS13335）→ CDP
+  接管 → `page_observe` 快照、`page_act` eval/extract、`task_run` 3/3 步通过
+  （httpbin.org 提取 `Herman Melville - Moby-Dick`）、`slot_close` 休眠。
+- 约束：`requireEgressLease=true` 的槽位必须先有 egress 租约；当前 egress 只给
+  `slot-002`（COOLDOWN）/`slot-004`（ACTIVE）发了租约，其它槽位需要先
+  `POST /api/v1/egress/lease/bind`。
+- 面板视觉确认（2026-11-18）：左侧「ShardX Matrix」整页打开，iframe 内 250 槽位、
+  统计条、状态灯全部渲染；Egress/ShardX 绿灯、Cloudflare/Instabox 暗（对应 19882/19883
+  未起）；`宿主桥` 指示灯说明面板走的是 postMessage 代理；`slot-004` 显示出口
+  104.28.163.182 / AS13335。截图：
+  [docs/images/panel-2026-11-18.jpg](docs/images/panel-2026-11-18.jpg)。
+- 面板动作链路确认（2026-11-18）：不点按钮，直接按按钮同款路径
+  `POST /api/guests/shardx-matrix/service/request`
+  `{method:'POST', path:'/api/v1/shardx/profile/launch', body:'{"matrixSlotId":"slot-004"}'}`
+  返回 200，槽位转为 `RUNNING`、`cdpAttached:true`、出口换到新租约
+  104.28.166.10 / AS13335；面板 5s 轮询后显示「运行中」与「休眠」按钮。截图：
+  [docs/images/panel-running-2026-11-18.jpg](docs/images/panel-running-2026-11-18.jpg)。
+- 环境前提：内置浏览器（agent web tool）需要
+  `~/.config/openchamber/extensions/server-browser/config.json` 里显式
+  `chromePath`（Chrome ≥109），改完需 `PUT /api/guests/server-browser/enabled`
+  false→true 重启该服务才会重新读取。
+- ShardX 升级（2026-11-18）：Launcher 2.1.4 → 2.1.5，便携版同路径替换，sha256
+  `dfbb3fdb8a23c3b6c781a6b043b53e61e8b329538c5d380cb4c5ed56a9a4c529` 校验通过；旧版备份
+  `D:\Tools\Auto-PC\shardx\backup\ShardBrowser-Launcher-portable-win-x64-2.1.4-20261118.exe`。
+  流程：先 `POST /profiles/<id>/stop` 停 `slot-004`（浏览器 6208 退出、残留 chrome 0）→
+  备份并退出启动器 → 替换 exe（ProductVersion 2.1.5）→ 重启 → `/health` 报 2.1.5。
+  验证：profiles 23 个、`data_root=D:\Data\shardx` 未变；`slot-004` egress 租约 #876
+  （104.28.166.10 / AS13335）→ CDP 接管 → `task_run` 3/3（httpbin H1
+  `Herman Melville - Moby-Dick`）→ `slot_close` 全部通过。2.1.5 变化：品牌域名
+  proxyshard→shardx、新增 `/extensions/updates*` 接口、Windows `platform_version`
+  指纹池修正；本扩展用到的 profiles/proxies/start/stop 无破坏性变化。
+- 真实站点验证（2026-11-18）：把邮箱 profile `2-aimeikeji135@gmail.com`
+  （`1c8abde2-b646-477d-a41b-6c06ea34d99e`）绑到 `slot-004` 并启动，直落
+  `mail.google.com/mail/u/0/#inbox`（已有登录态，未跳登录页），标题「收件箱 (352) -
+  aimeikeji135@gmail.com - Gmail」，`page_observe` 读到 386 行会话列表，截图
+  [docs/images/gmail-slot-004-2026-11-18.png](docs/images/gmail-slot-004-2026-11-18.png)。
+- 缺陷与修复（2026-11-18）：启动链 `alignProfileToLease` 把 `fingerprint` 当成
+  GET 返回的嵌套字段，但 2.1.x 的 `GET /profiles/<id>` 返回的是扁平配置，而
+  `PATCH /profiles/<id>` 的 `fingerprint` 是**整体替换**——于是每次经扩展启动，
+  config 被写成只剩 `timezone/locale/webrtc`，`name/notes/screen/webgl/noise/tls/...`
+  全部丢失，启动器里显示 `(unnamed)`（该缺陷在 2.1.4 同样存在）。修复：
+  `lib/shardx-client.js` 先 GET 完整配置，剔除 `_meta/running/cdp` 后合并回写，
+  locale 改用实际字段 `icu_locale`；GET 失败时只写 `proxy_id`，绝不单发
+  `fingerprint`。测试 mock 改为真实扁平结构 + 替换语义，断言 `name/notes/screen`
+  保留，`npm test` 8/8。已同步部署目录并 `PUT /api/guests/shardx-matrix/enabled`
+  false→true 重启服务（新 pid 22244 / port 56938，token 见 discovery），再启动
+  `slot-004` 验证 name 与 config 保留。
+- 受损 profile（仅经扩展启动过的两个）：`1c5bcd6d` 经 `myaccount.google.com`
+  确认为登录账号 `jiaoben987@gmail.com`（页面显示名「照王」），已 PATCH 命名为
+  `jiaoben987@gmail.com`；该 profile 属 2026-10-14 的导入批次，累计运行约 2.7h，
+  名字丢失前是否有编号已无记录。`1c8abde2`（`2-aimeikeji135@gmail.com`）已 PATCH
+  恢复名字，`icu_locale=nl-NL`，但 `screen/webgl/noise/...` 等原指纹字段无法还原
+  （其余 21 个 profile 未受影响）。
+- 受损 profile 重建（2026-11-18，已完成）：两个 profile 经 `GET /fingerprint/new`
+  生成完整预设并 PATCH `fingerprint`，再 PATCH `name` 固化名字。两者均为 Windows
+  Chrome 157 UA / 2560x1440 / `nl-NL` / `Europe/Amsterdam` / `webrtc=proxy`，
+  22 个配置键；`1c5bcd6d`（jiaoben987@gmail.com）用 RTX 2070 SUPER、8 核，
+  `1c8abde2`（2-aimeikeji135@gmail.com）用 GT 720、12 核。CDP 实测 UA/语言/
+  screen/WebGL/timezone 与配置一致，`navigator.webdriver=false`。重新启动
+  `slot-004` 后 Gmail 仍直落收件箱（352），egress 104.28.166.10（NL）正常；
+  期间一次 `ERR_TUNNEL_CONNECTION_FAILED` 为 egress 瞬时故障，重试即恢复。
+- 未做：尚未提交今天的验收改动（ROADMAP / HANDOFF）。
 
 文档：README / docs/ARCHITECTURE.md / docs/OPERATIONS.md / docs/MCP-TOOLS.md 已对齐 v2。
 
